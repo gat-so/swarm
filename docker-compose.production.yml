@@ -1,0 +1,23 @@
+services:
+  frontend-production:
+    image: ghcr.io/gat-so/swarm-frontend:production
+    container_name: swarm-frontend-production
+    ports:
+      - "3001:80"
+    depends_on:
+      - backend-production
+    restart: unless-stopped
+
+  backend-production:
+    image: ghcr.io/gat-so/swarm-backend:production
+    container_name: swarm-backend-production
+    ports:
+      - "4001:4001"
+    environment:
+      - NODE_ENV=production
+      - PORT=4001
+    restart: unless-stopped
+
+networks:
+  default:
+    name: swarm-production

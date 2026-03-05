@@ -1,0 +1,100 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [master, dev]
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        project: [frontend, backend]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ${{ matrix.project }}/package-lock.json
+      - run: npm ci
+        working-directory: ${{ matrix.project }}
+      - run: npm run lint
+        working-directory: ${{ matrix.project }}
+
+  format:
+    name: Prettier
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        project: [frontend, backend]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ${{ matrix.project }}/package-lock.json
+      - run: npm ci
+        working-directory: ${{ matrix.project }}
+      - run: npm run format:check
+        working-directory: ${{ matrix.project }}
+
+  typecheck:
+    name: Type Check
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - project: frontend
+            command: npx tsc -b --noEmit
+          - project: backend
+            command: npx tsc --noEmit
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ${{ matrix.project }}/package-lock.json
+      - run: npm ci
+        working-directory: ${{ matrix.project }}
+      - run: ${{ matrix.command }}
+        working-directory: ${{ matrix.project }}
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        project: [frontend, backend]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ${{ matrix.project }}/package-lock.json
+      - run: npm ci
+        working-directory: ${{ matrix.project }}
+      - run: npm test
+        working-directory: ${{ matrix.project }}
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        project: [frontend, backend]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ${{ matrix.project }}/package-lock.json
+      - run: npm ci
+        working-directory: ${{ matrix.project }}
+      - run: npm run build
+        working-directory: ${{ matrix.project }}

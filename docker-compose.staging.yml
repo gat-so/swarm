@@ -1,0 +1,23 @@
+services:
+  frontend-staging:
+    image: ghcr.io/gat-so/swarm-frontend:staging
+    container_name: swarm-frontend-staging
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend-staging
+    restart: unless-stopped
+
+  backend-staging:
+    image: ghcr.io/gat-so/swarm-backend:staging
+    container_name: swarm-backend-staging
+    ports:
+      - "4000:4000"
+    environment:
+      - NODE_ENV=staging
+      - PORT=4000
+    restart: unless-stopped
+
+networks:
+  default:
+    name: swarm-staging
