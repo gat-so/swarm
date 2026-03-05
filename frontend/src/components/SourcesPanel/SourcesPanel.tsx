@@ -6,11 +6,26 @@ export interface SourceFile {
   name: string;
   type: 'pdf' | 'image' | 'doc' | 'audio' | 'other';
   checked: boolean;
+  uploading?: boolean;
+  progress?: number;
+}
+
+export interface Session {
+  id: string;
+  name: string;
+  created_at: string;
 }
 
 interface SourcesPanelProps {
   sources: SourceFile[];
   onSourcesChange: (sources: SourceFile[]) => void;
+  onUploadFiles: (files: FileList) => void;
+  onDeleteSource: (id: string) => void;
+  sessions: Session[];
+  currentSessionId: string | null;
+  onNewSession: () => void;
+  onSelectSession: (sessionId: string) => void;
+  onDeleteSession: (sessionId: string) => void;
 }
 
 /* ---- Icon components ---- */
@@ -87,6 +102,93 @@ const DropzoneIcon = () => (
   </svg>
 );
 
+const EmptyDocIcon = () => (
+  <svg
+    viewBox="0 0 64 64"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.5"
+    className="empty-state__icon"
+  >
+    <rect x="14" y="6" width="36" height="52" rx="4" />
+    <line x1="22" y1="20" x2="42" y2="20" />
+    <line x1="22" y1="28" x2="38" y2="28" />
+    <line x1="22" y1="36" x2="34" y2="36" />
+    <circle cx="44" cy="48" r="10" fill="var(--color-surface-1)" />
+    <line x1="44" y1="43" x2="44" y2="53" />
+    <line x1="39" y1="48" x2="49" y2="48" />
+  </svg>
+);
+
+const ChevronDownIcon = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+    <polyline points="6 9 12 15 18 9" />
+  </svg>
+);
+
+const ChevronUpIcon = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+    <polyline points="6 15 12 9 18 15" />
+  </svg>
+);
+
+const ChatBubbleIcon = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+    <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z" />
+  </svg>
+);
+
+const MoreVertIcon = () => (
+  <svg viewBox="0 0 24 24" fill="currentColor">
+    <circle cx="12" cy="5" r="1.5" />
+    <circle cx="12" cy="12" r="1.5" />
+    <circle cx="12" cy="19" r="1.5" />
+  </svg>
+);
+
+const TrashIcon = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+    <polyline points="3 6 5 6 21 6" />
+    <path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6" />
+    <path d="M10 11v6" />
+    <path d="M14 11v6" />
+    <path d="M9 6V4a1 1 0 011-1h4a1 1 0 011 1v2" />
+  </svg>
+);
+
+/* ---- Circular Progress sub-component ---- */
+function CircularProgress({ progress }: { progress: number }) {
+  const radius = 7;
+  const circumference = 2 * Math.PI * radius;
+  const offset = circumference - (progress / 100) * circumference;
+
+  return (
+    <div className="circular-progress" title={`Uploading: ${Math.round(progress)}%`}>
+      <svg viewBox="0 0 18 18" className="circular-progress__svg">
+        <circle
+          className="circular-progress__track"
+          cx="9"
+          cy="9"
+          r={radius}
+          strokeWidth="2"
+          fill="none"
+        />
+        <circle
+          className="circular-progress__fill"
+          cx="9"
+          cy="9"
+          r={radius}
+          strokeWidth="2"
+          fill="none"
+          strokeDasharray={circumference}
+          strokeDashoffset={offset}
+          strokeLinecap="round"
+        />
+      </svg>
+    </div>
+  );
+}
+
 /* ---- Checkbox sub-component ---- */
 function Checkbox({
   checked,
@@ -113,13 +215,35 @@ function Checkbox({
 export default function SourcesPanel({
   sources,
   onSourcesChange,
+  onUploadFiles,
+  onDeleteSource,
+  sessions,
+  currentSessionId,
+  onNewSession,
+  onSelectSession,
+  onDeleteSession,
 }: SourcesPanelProps) {
   const [collapsed, setCollapsed] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
   const [dragging, setDragging] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [sourceMenuId, setSourceMenuId] = useState<string | null>(null);
+  const sourceMenuRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const addSourcesTriggerRef = useRef<HTMLButtonElement>(null);
   const modalContentRef = useRef<HTMLDivElement>(null);
+
+  // Close source context menu on click outside
+  useEffect(() => {
+    if (!sourceMenuId) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (sourceMenuRef.current && !sourceMenuRef.current.contains(e.target as Node)) {
+        setSourceMenuId(null);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [sourceMenuId]);
 
   const allChecked = sources.length > 0 && sources.every((s) => s.checked);
 
@@ -134,43 +258,26 @@ export default function SourcesPanel({
     );
   };
 
-  const addFiles = useCallback(
+  const handleFiles = useCallback(
     (files: FileList | null) => {
-      if (!files) return;
-      const newSources: SourceFile[] = Array.from(files).map((f) => {
-        const ext = f.name.split('.').pop()?.toLowerCase() ?? '';
-        let type: SourceFile['type'] = 'other';
-        if (ext === 'pdf') type = 'pdf';
-        else if (['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp'].includes(ext))
-          type = 'image';
-        else if (['doc', 'docx', 'txt', 'md', 'rtf'].includes(ext))
-          type = 'doc';
-        else if (['mp3', 'wav', 'ogg', 'flac', 'm4a'].includes(ext))
-          type = 'audio';
-        return {
-          id: crypto.randomUUID(),
-          name: f.name,
-          type,
-          checked: true,
-        };
-      });
-      onSourcesChange([...sources, ...newSources]);
+      if (!files || files.length === 0) return;
+      onUploadFiles(files);
       setModalOpen(false);
     },
-    [sources, onSourcesChange],
+    [onUploadFiles],
   );
 
   const handleDrop = useCallback(
     (e: React.DragEvent) => {
       e.preventDefault();
       setDragging(false);
-      addFiles(e.dataTransfer.files);
+      handleFiles(e.dataTransfer.files);
     },
-    [addFiles],
+    [handleFiles],
   );
 
   const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    addFiles(e.target.files);
+    handleFiles(e.target.files);
     // Reset so selecting the same file again triggers onChange
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
@@ -257,7 +364,15 @@ export default function SourcesPanel({
             Add sources
           </button>
 
-          {sources.length > 0 && (
+          {sources.length === 0 ? (
+            <div className="empty-state">
+              <EmptyDocIcon />
+              <span className="empty-state__title">No sources yet</span>
+              <span className="empty-state__text">
+                Add files to get started
+              </span>
+            </div>
+          ) : (
             <>
               <div className="select-all-row">
                 <span className="select-all-row__label">
@@ -276,24 +391,104 @@ export default function SourcesPanel({
                     className="source-item"
                     key={s.id}
                     role="listitem"
-                    onClick={() => toggleSource(s.id)}
+                    onClick={() => {
+                      if (!s.uploading) toggleSource(s.id);
+                    }}
                   >
                     <span className="source-item__icon">
                       <FileIcon type={s.type} />
                     </span>
+                    <button
+                      className="source-item__menu-trigger"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSourceMenuId(sourceMenuId === s.id ? null : s.id);
+                      }}
+                      aria-label="Source options"
+                    >
+                      <MoreVertIcon />
+                    </button>
+                    {sourceMenuId === s.id && (
+                      <div ref={sourceMenuRef} className="source-item__popover popover">
+                        <button
+                          className="popover-item popover-item--danger"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onDeleteSource(s.id);
+                            setSourceMenuId(null);
+                          }}
+                        >
+                          <TrashIcon />
+                          Remove source
+                        </button>
+                      </div>
+                    )}
                     <span className="source-item__name" title={s.name}>
                       {s.name}
                     </span>
-                    <Checkbox
-                      id={`source-${s.id}`}
-                      checked={s.checked}
-                      onChange={() => toggleSource(s.id)}
-                      onClick={(e) => e.stopPropagation()}
-                    />
+                    {s.uploading ? (
+                      <CircularProgress progress={s.progress ?? 0} />
+                    ) : (
+                      <Checkbox
+                        id={`source-${s.id}`}
+                        checked={s.checked}
+                        onChange={() => toggleSource(s.id)}
+                        onClick={(e) => e.stopPropagation()}
+                      />
+                    )}
                   </div>
                 ))}
               </div>
             </>
+          )}
+        </div>
+
+        {/* History Panel */}
+        <div className={`history-panel${historyOpen ? ' open' : ''}`}>
+          <button
+            className="history-panel__header"
+            onClick={() => setHistoryOpen((o) => !o)}
+            aria-expanded={historyOpen}
+            aria-label={historyOpen ? 'Collapse history' : 'Expand history'}
+          >
+            {historyOpen ? <ChevronDownIcon /> : <ChevronUpIcon />}
+            <span className="history-panel__title">History</span>
+          </button>
+          {historyOpen && (
+            <div className="history-panel__body">
+              <div className="history-list">
+                {sessions.map((session) => (
+                  <div
+                    key={session.id}
+                    className={`history-item${session.id === currentSessionId ? ' active' : ''}`}
+                  >
+                    <button
+                      className="history-item__select"
+                      onClick={() => onSelectSession(session.id)}
+                      title={session.name}
+                    >
+                      <ChatBubbleIcon />
+                      <span className="history-item__name">{session.name}</span>
+                    </button>
+                    <button
+                      className="history-item__delete"
+                      onClick={() => onDeleteSession(session.id)}
+                      aria-label={`Delete ${session.name}`}
+                      title="Delete session"
+                    >
+                      <TrashIcon />
+                    </button>
+                  </div>
+                ))}
+              </div>
+              <button
+                className="new-conversation-btn"
+                onClick={onNewSession}
+              >
+                <PlusIcon />
+                New conversation
+              </button>
+            </div>
           )}
         </div>
 
