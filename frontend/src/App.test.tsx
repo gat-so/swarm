@@ -3,8 +3,10 @@ import { describe, it, expect } from 'vitest';
 import App from './App';
 
 describe('App', () => {
-  it('renders the heading', () => {
+  it('renders the three main panels', () => {
     render(<App />);
-    expect(screen.getByText('Vite + React')).toBeInTheDocument();
+    expect(screen.getByText('Sources')).toBeInTheDocument();
+    expect(screen.getByText('Chat')).toBeInTheDocument();
+    expect(screen.getByText('Simulation')).toBeInTheDocument();
   });
 });
