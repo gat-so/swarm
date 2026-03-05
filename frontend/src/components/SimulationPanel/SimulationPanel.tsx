@@ -1,5 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import './SimulationPanel.css';
+import CommunityCanvas from './CommunityCanvas';
 
 /* ---- Icons ---- */
 const PlayIcon = () => (
@@ -152,9 +153,11 @@ export default function SimulationPanel() {
         <span className="simulation-header__title">Simulation</span>
       </div>
 
-      {/* Player placeholder */}
+      {/* Player area */}
       <div className="simulation-player">
-        <div className="simulation-player__placeholder">
+        <CommunityCanvas currentTime={currentTime} playing={playing} />
+        {/* Placeholder preserved for future reuse */}
+        <div className="simulation-player__placeholder simulation-player__placeholder--hidden">
           <SimPlaceholderIcon />
           <span className="simulation-player__placeholder-text">
             Community mini-game simulation

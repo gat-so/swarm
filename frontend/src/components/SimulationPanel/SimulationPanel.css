@@ -58,6 +58,10 @@
   line-height: var(--line-height-normal);
 }
 
+.simulation-player__placeholder--hidden {
+  display: none;
+}
+
 /* Timeline scrubber */
 .simulation-timeline {
   padding: 0 var(--space-lg);
