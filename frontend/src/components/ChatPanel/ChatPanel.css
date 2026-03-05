@@ -121,6 +121,13 @@
   border-color: var(--color-border);
 }
 
+.chat-suggestion-chip:focus-visible {
+  background: var(--color-surface-hover);
+  border-color: var(--color-accent);
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
+}
+
 /* User message */
 .chat-user-message {
   align-self: flex-end;
@@ -209,6 +216,11 @@
   background: var(--color-accent-hover);
 }
 
+.chat-send-btn:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
 .chat-send-btn svg {
   width: 16px;
   height: 16px;
@@ -277,6 +289,12 @@
 
 .pill-toggle:hover {
   background: var(--color-surface-hover);
+}
+
+.pill-toggle:focus-visible {
+  background: var(--color-surface-hover);
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
 }
 
 .pill-toggle.active {

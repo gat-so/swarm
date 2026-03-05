@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
 import './SourcesPanel.css';
 
 export interface SourceFile {
@@ -91,14 +91,16 @@ const DropzoneIcon = () => (
 function Checkbox({
   checked,
   onChange,
+  onClick,
   id,
 }: {
   checked: boolean;
   onChange: () => void;
+  onClick?: (e: React.MouseEvent) => void;
   id: string;
 }) {
   return (
-    <label className="checkbox" htmlFor={id}>
+    <label className="checkbox" htmlFor={id} onClick={onClick}>
       <input type="checkbox" id={id} checked={checked} onChange={onChange} />
       <span className="checkbox__box">
         <CheckIcon />
@@ -116,6 +118,8 @@ export default function SourcesPanel({
   const [modalOpen, setModalOpen] = useState(false);
   const [dragging, setDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const addSourcesTriggerRef = useRef<HTMLButtonElement>(null);
+  const modalContentRef = useRef<HTMLDivElement>(null);
 
   const allChecked = sources.length > 0 && sources.every((s) => s.checked);
 
@@ -165,6 +169,64 @@ export default function SourcesPanel({
     [addFiles],
   );
 
+  const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    addFiles(e.target.files);
+    // Reset so selecting the same file again triggers onChange
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  };
+
+  // Modal: Escape key + focus trap + focus restore
+  useEffect(() => {
+    if (!modalOpen) return;
+
+    const dialog = modalContentRef.current;
+    if (!dialog) return;
+
+    // Capture ref for cleanup
+    const triggerEl = addSourcesTriggerRef.current;
+
+    const focusableSelector =
+      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
+    const firstFocusable = dialog.querySelector<HTMLElement>(focusableSelector);
+    firstFocusable?.focus();
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setModalOpen(false);
+        return;
+      }
+
+      if (e.key === 'Tab') {
+        const focusableItems =
+          dialog.querySelectorAll<HTMLElement>(focusableSelector);
+        if (focusableItems.length === 0) return;
+
+        const first = focusableItems[0];
+        const last = focusableItems[focusableItems.length - 1];
+
+        if (e.shiftKey) {
+          if (document.activeElement === first) {
+            e.preventDefault();
+            last.focus();
+          }
+        } else {
+          if (document.activeElement === last) {
+            e.preventDefault();
+            first.focus();
+          }
+        }
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+      triggerEl?.focus();
+    };
+  }, [modalOpen]);
+
   return (
     <>
       <aside
@@ -187,6 +249,7 @@ export default function SourcesPanel({
         {/* Body — visible when expanded */}
         <div className="sources-body">
           <button
+            ref={addSourcesTriggerRef}
             className="add-sources-btn"
             onClick={() => setModalOpen(true)}
           >
@@ -225,6 +288,7 @@ export default function SourcesPanel({
                       id={`source-${s.id}`}
                       checked={s.checked}
                       onChange={() => toggleSource(s.id)}
+                      onClick={(e) => e.stopPropagation()}
                     />
                   </div>
                 ))}
@@ -260,12 +324,14 @@ export default function SourcesPanel({
         <div
           className="modal-overlay"
           onClick={() => setModalOpen(false)}
-          role="dialog"
-          aria-label="Add sources"
         >
           <div
+            ref={modalContentRef}
             className="modal-content add-sources-modal"
             onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-label="Add sources"
           >
             <div className="add-sources-modal__header">
               <h2 className="add-sources-modal__title">Add sources</h2>
@@ -300,7 +366,7 @@ export default function SourcesPanel({
               type="file"
               multiple
               style={{ display: 'none' }}
-              onChange={(e) => addFiles(e.target.files)}
+              onChange={handleFileInputChange}
             />
 
             <button

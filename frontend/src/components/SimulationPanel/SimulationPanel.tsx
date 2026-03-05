@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
 import './SimulationPanel.css';
 
 /* ---- Icons ---- */
@@ -46,6 +46,7 @@ const SimPlaceholderIcon = () => (
 /* ---- Helpers ---- */
 const SPEEDS = [1, 1.5, 2];
 const TOTAL_SECONDS = 408; // 06:48
+const SCRUB_STEP = 5; // seconds per arrow key press
 
 function formatTime(seconds: number): string {
   const m = Math.floor(seconds / 60);
@@ -60,7 +61,41 @@ export default function SimulationPanel() {
   const [speedIndex, setSpeedIndex] = useState(0);
   const scrubberRef = useRef<HTMLDivElement>(null);
 
+  // Refs for drag listeners so they can be cleaned up on unmount
+  const onMoveRef = useRef<((ev: MouseEvent) => void) | null>(null);
+  const onUpRef = useRef<(() => void) | null>(null);
+
   const progress = (currentTime / TOTAL_SECONDS) * 100;
+
+  // Playback timer — advance time when playing
+  useEffect(() => {
+    if (!playing) return;
+
+    const intervalMs = 1000 / SPEEDS[speedIndex];
+    const id = setInterval(() => {
+      setCurrentTime((prev) => {
+        const next = Math.min(prev + 1, TOTAL_SECONDS);
+        if (next >= TOTAL_SECONDS) {
+          setPlaying(false);
+        }
+        return next;
+      });
+    }, intervalMs);
+
+    return () => clearInterval(id);
+  }, [playing, speedIndex]);
+
+  // Cleanup drag listeners on unmount
+  useEffect(() => {
+    return () => {
+      if (onMoveRef.current) {
+        document.removeEventListener('mousemove', onMoveRef.current);
+      }
+      if (onUpRef.current) {
+        document.removeEventListener('mouseup', onUpRef.current);
+      }
+    };
+  }, []);
 
   const cycleSpeed = () => {
     setSpeedIndex((i) => (i + 1) % SPEEDS.length);
@@ -84,13 +119,30 @@ export default function SimulationPanel() {
 
   const handleMouseDown = (e: React.MouseEvent) => {
     handleScrub(e.clientX);
+
     const onMove = (ev: MouseEvent) => handleScrub(ev.clientX);
     const onUp = () => {
       document.removeEventListener('mousemove', onMove);
       document.removeEventListener('mouseup', onUp);
+      onMoveRef.current = null;
+      onUpRef.current = null;
     };
+
+    onMoveRef.current = onMove;
+    onUpRef.current = onUp;
+
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup', onUp);
+  };
+
+  const handleScrubberKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'ArrowRight' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      setCurrentTime((t) => Math.min(TOTAL_SECONDS, t + SCRUB_STEP));
+    } else if (e.key === 'ArrowLeft' || e.key === 'ArrowDown') {
+      e.preventDefault();
+      setCurrentTime((t) => Math.max(0, t - SCRUB_STEP));
+    }
   };
 
   return (
@@ -118,11 +170,14 @@ export default function SimulationPanel() {
           className="simulation-scrubber"
           ref={scrubberRef}
           onMouseDown={handleMouseDown}
+          onKeyDown={handleScrubberKeyDown}
+          tabIndex={0}
           role="slider"
           aria-label="Simulation timeline"
           aria-valuenow={currentTime}
           aria-valuemin={0}
           aria-valuemax={TOTAL_SECONDS}
+          aria-valuetext={formatTime(currentTime)}
         >
           <div className="simulation-scrubber__track">
             <div

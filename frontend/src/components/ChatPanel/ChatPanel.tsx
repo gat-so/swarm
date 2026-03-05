@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import './ChatPanel.css';
 
 interface ChatPanelProps {
@@ -100,6 +100,8 @@ export default function ChatPanel({ checkedSourceCount }: ChatPanelProps) {
   const [pendingConfig, setPendingConfig] = useState<ChatConfig>(config);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const kebabRef = useRef<HTMLDivElement>(null);
+  const configTriggerRef = useRef<HTMLButtonElement>(null);
+  const configDialogRef = useRef<HTMLDivElement>(null);
 
   // Auto-resize textarea
   useEffect(() => {
@@ -122,10 +124,63 @@ export default function ChatPanel({ checkedSourceCount }: ChatPanelProps) {
     return () => document.removeEventListener('mousedown', handler);
   }, [kebabOpen]);
 
-  const openConfig = () => {
+  // Configure dialog: Escape key + focus trap + focus restore
+  useEffect(() => {
+    if (!configOpen) return;
+
+    const dialog = configDialogRef.current;
+    if (!dialog) return;
+
+    // Capture ref for cleanup
+    const triggerEl = configTriggerRef.current;
+
+    // Focus the first focusable element inside the dialog
+    const focusableSelector =
+      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
+    const firstFocusable = dialog.querySelector<HTMLElement>(focusableSelector);
+    firstFocusable?.focus();
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setConfigOpen(false);
+        return;
+      }
+
+      // Focus trap
+      if (e.key === 'Tab') {
+        const focusableItems =
+          dialog.querySelectorAll<HTMLElement>(focusableSelector);
+        if (focusableItems.length === 0) return;
+
+        const first = focusableItems[0];
+        const last = focusableItems[focusableItems.length - 1];
+
+        if (e.shiftKey) {
+          if (document.activeElement === first) {
+            e.preventDefault();
+            last.focus();
+          }
+        } else {
+          if (document.activeElement === last) {
+            e.preventDefault();
+            first.focus();
+          }
+        }
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+      // Restore focus to trigger
+      triggerEl?.focus();
+    };
+  }, [configOpen]);
+
+  const openConfig = useCallback(() => {
     setPendingConfig(config);
     setConfigOpen(true);
-  };
+  }, [config]);
 
   const saveConfig = () => {
     setConfig(pendingConfig);
@@ -153,6 +208,7 @@ export default function ChatPanel({ checkedSourceCount }: ChatPanelProps) {
           <span className="chat-header__title">Chat</span>
           <div className="chat-header__actions" ref={kebabRef}>
             <button
+              ref={configTriggerRef}
               className="icon-btn"
               onClick={openConfig}
               aria-label="Configure chat"
@@ -172,12 +228,13 @@ export default function ChatPanel({ checkedSourceCount }: ChatPanelProps) {
             {/* Kebab popover */}
             {kebabOpen && (
               <div className="popover" style={{ top: '100%', right: 0 }}>
-                <div
+                <button
+                  type="button"
                   className="popover-item"
                   onClick={() => setKebabOpen(false)}
                 >
                   Delete chat history
-                </div>
+                </button>
                 <div className="popover-note">
                   Chat history is private to you.
                 </div>
@@ -271,6 +328,7 @@ export default function ChatPanel({ checkedSourceCount }: ChatPanelProps) {
               placeholder="Start typing..."
               rows={1}
               id="chat-input"
+              aria-label="Message input"
             />
             <span className="chat-source-badge">
               {checkedSourceCount} sources
@@ -293,12 +351,14 @@ export default function ChatPanel({ checkedSourceCount }: ChatPanelProps) {
         <div
           className="modal-overlay"
           onClick={() => setConfigOpen(false)}
-          role="dialog"
-          aria-label="Configure Chat"
         >
           <div
+            ref={configDialogRef}
             className="modal-content configure-chat"
             onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-label="Configure Chat"
           >
             <div className="configure-chat__header">
               <h2 className="configure-chat__title">Configure Chat</h2>
