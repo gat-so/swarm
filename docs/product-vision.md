@@ -194,9 +194,7 @@ For the hackathon, it is an ambitious, technically deep, and highly demonstrable
 
 _Let AI work so humans can lead._
 
-
 ---
-
 
 # 02 — Problem Statement: The Task Execution Gap in AI
 
@@ -411,9 +409,7 @@ SWARM makes this multi-agent collaboration accessible to everyone through a natu
 
 **The task execution gap is universal. The solution does not exist. SWARM fills the gap.**
 
-
 ---
-
 
 # 03 — Refined Concept: A Multi-Agent Personal AI Assistant Built on OpenClaw
 
@@ -871,9 +867,7 @@ SWARM is the only product that combines:
 
 This combination does not exist in any current product. ChatGPT is accessible but single-agent and passive. CrewAI is multi-agent but developer-only. Zapier executes actions but has no intelligence. SWARM combines the best of all three.
 
-
 ---
-
 
 # 04 — Use Cases and Target Applications
 
@@ -1188,9 +1182,7 @@ For any task that involves external communication or action, SWARM always presen
 
 All agent outputs include references to the source materials used. This enables verification, builds trust, and produces professional-quality deliverables with traceable reasoning.
 
-
 ---
-
 
 # 05 — Technical Architecture
 
@@ -1216,10 +1208,13 @@ This document details the technical architecture of SWARM, a multi-agent persona
 │ Source List   │  Output Display      │  Information Flow             │
 │              │  Action Buttons      │  Activity Log                 │
 ├──────────────┴──────────────────────┴───────────────────────────────┤
-│                    Frontend (Next.js 14 + React 18)                 │
+│                      Frontend (React + Vite)                        │
 │                WebSocket Client  |  REST Client  |  File Handler    │
+│                          Hosted on Vercel                           │
 ├─────────────────────────────────────────────────────────────────────┤
-│                        API Gateway (FastAPI)                        │
+│                 HTTPS + WSS (cross-origin)                          │
+├─────────────────────────────────────────────────────────────────────┤
+│                    API Gateway (Node.js + Express)                   │
 │              REST Endpoints  |  WebSocket Server                    │
 ├──────────────┬──────────────────────┬───────────────────────────────┤
 │   Source      │    Task              │   Simulation                  │
@@ -1235,23 +1230,27 @@ This document details the technical architecture of SWARM, a multi-agent persona
 │ Claude Sonnet│  SQLite (persistent) │  Email API                    │
 │ GPT-4o-mini  │  Redis (ephemeral)   │  Web Search API               │
 │ Ollama       │                      │  File Processing              │
-└──────────────┴──────────────────────┴───────────────────────────────┘
+├──────────────┴──────────────────────┴───────────────────────────────┤
+│                      Hosted on AWS Lightsail                        │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Technology Stack
 
-| Layer                  | Technology                                                      | Purpose                                              |
-| ---------------------- | --------------------------------------------------------------- | ---------------------------------------------------- |
-| **Frontend**           | Next.js 14, React 18, Tailwind CSS 3                            | 3-column responsive UI                               |
-| **Visualization**      | HTML5 Canvas or D3.js                                           | Simulation panel animation                           |
-| **Backend**            | Python 3.12, FastAPI, Uvicorn                                   | API server, WebSocket server                         |
-| **Agent Framework**    | OpenClaw                                                        | Multi-agent orchestration, gateway, routing          |
-| **LLM Providers**      | Anthropic (Claude Sonnet), OpenAI (GPT-4o-mini), Ollama (local) | Model inference                                      |
-| **Persistent Storage** | SQLite                                                          | Sources, task history, agent logs                    |
-| **Ephemeral Storage**  | Redis                                                           | Active task state, agent context, WebSocket sessions |
-| **File Processing**    | PyPDF2, python-docx, openpyxl                                   | Document parsing                                     |
-| **Web Search**         | Tavily API or SerpAPI                                           | Real-time web search for research agents             |
-| **Email**              | SMTP / SendGrid API                                             | Email sending (with user confirmation)               |
+| Layer                  | Technology                                                      | Purpose                                                 |
+| ---------------------- | --------------------------------------------------------------- | ------------------------------------------------------- |
+| **Frontend**           | React 19, Vite, Tailwind CSS 3                                  | 3-column responsive UI                                  |
+| **Visualization**      | HTML5 Canvas or D3.js                                           | Simulation panel animation                              |
+| **Backend**            | Node.js 22+, Express, ws                                        | API server, WebSocket server (matches OpenClaw runtime) |
+| **Agent Framework**    | OpenClaw                                                        | Multi-agent orchestration, gateway, routing             |
+| **LLM Providers**      | Anthropic (Claude Sonnet), OpenAI (GPT-4o-mini), Ollama (local) | Model inference                                         |
+| **Persistent Storage** | SQLite                                                          | Sources, task history, agent logs                       |
+| **Ephemeral Storage**  | Redis                                                           | Active task state, agent context, WebSocket sessions    |
+| **File Processing**    | pdf-parse, mammoth, xlsx                                        | Document parsing                                        |
+| **Web Search**         | Tavily API or SerpAPI                                           | Real-time web search for research agents                |
+| **Email**              | SMTP / SendGrid API                                             | Email sending (with user confirmation)                  |
+| **Frontend Hosting**   | Vercel                                                          | CDN-hosted SPA                                          |
+| **Backend Hosting**    | AWS Lightsail                                                   | VPS for backend + OpenClaw Gateway                      |
 
 ---
 
@@ -1888,9 +1887,7 @@ App
 | Chat panel update latency   | < 500ms                          | Agent event → UI update        |
 | Dashboard initial load      | < 2 seconds                      | Page load measurement          |
 
-
 ---
-
 
 # 06 — Demo Strategy
 
@@ -2115,9 +2112,7 @@ The confirmation step before sending the email is not a limitation — it's a tr
 - Time every section — total demo must fit within judging window
 - Prepare for every reasonable judge question (see table above)
 
-
 ---
-
 
 # 07 — Judging Criteria Alignment
 
@@ -2216,7 +2211,7 @@ Depth of technical implementation, effective use of the framework (OpenClaw), so
 | **Multi-Source Ingestion**    | File parsing (PDF, DOCX, XLSX), text processing, web search integration — all indexed and available to agents                                                   |
 | **Model Routing**             | Intelligent routing of agent tasks to appropriate LLM models based on complexity — Claude Sonnet for reasoning, GPT-4o-mini for routine tasks                   |
 | **WebSocket Architecture**    | Real-time bidirectional communication for simulation updates, progress tracking, and action confirmation                                                        |
-| **Frontend Architecture**     | Next.js 14 + React 18 with 3-column responsive layout, WebSocket integration, and canvas-based animation                                                        |
+| **Frontend Architecture**     | React + Vite with 3-column responsive layout, WebSocket integration, and canvas-based animation                                                                 |
 
 ### What Could Reduce Score
 
@@ -2290,9 +2285,7 @@ Does this solve a real problem? Would real users use this? Is the functionality 
 | Judges don't understand multi-agent value | Innovation, Product Value   | -5 to -10 points   | Clear storytelling, ChatGPT comparison, visual simulation |
 | OpenClaw integration perceived as shallow | Technical                   | -5 to -8 points    | Document integration points, show message passing logs    |
 
-
 ---
-
 
 # 08 — Competitive Landscape
 
@@ -2431,9 +2424,7 @@ SWARM occupies a unique position: **the first multi-agent AI assistant that non-
 
 This is not an incremental improvement to any existing category. It is a **new category**: the AI team assistant — where you don't use AI, you manage AI.
 
-
 ---
-
 
 # 09 — Risks and Mitigations: Comprehensive Risk Assessment
 

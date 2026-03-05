@@ -117,9 +117,7 @@ One use case executed flawlessly beats five mediocre ones. For the hackathon: pe
 | Custom agent type creation                     | Pre-built agent library is sufficient |
 | PDF/document export of outputs                 | In-app display is sufficient          |
 
-
 ---
-
 
 # SWARM — Personas, User Stories, and Functional Requirements
 
@@ -560,9 +558,7 @@ One use case executed flawlessly beats five mediocre ones. For the hackathon: pe
 | **Priority**    | Should Have                                                                                |
 | **Description** | System shall provide expandable views showing each agent's reasoning and source citations. |
 
-
 ---
-
 
 # SWARM — Non-Functional Requirements, Architecture, and APIs
 
@@ -627,7 +623,7 @@ One use case executed flawlessly beats five mediocre ones. For the hackathon: pe
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│                     SWARM Frontend (Next.js 14)                   │
+│                    SWARM Frontend (React + Vite)                   │
 │  ┌──────────────┬──────────────────┬──────────────────────────┐  │
 │  │Sources Panel │   Chat Panel     │  Simulation Panel        │  │
 │  │              │                  │                          │  │
@@ -640,9 +636,9 @@ One use case executed flawlessly beats five mediocre ones. For the hackathon: pe
 │                                                                    │
 │    WebSocket Client  ←→  REST Client  ←→  File Upload Handler     │
 └────────────────────────────┬─────────────────────────────────────┘
-                             │ HTTP + WebSocket
+              Hosted on Vercel│ HTTPS + WSS (cross-origin)
 ┌────────────────────────────┴─────────────────────────────────────┐
-│                     SWARM Backend (FastAPI)                        │
+│                  SWARM Backend (Node.js + Express)                  │
 │                                                                    │
 │  ┌─────────────────┬──────────────────┬──────────────────────┐   │
 │  │ Source Service   │ Task Orchestrator │ Simulation Engine    │   │
@@ -663,27 +659,29 @@ One use case executed flawlessly beats five mediocre ones. For the hackathon: pe
 │  │ GPT-4o-mini   │ Redis         │ Email API (SMTP/SendGrid) │   │
 │  │ Ollama        │               │ File Processing libraries │   │
 │  └──────────────┴───────────────┴────────────────────────────┘   │
+│                         Hosted on AWS Lightsail                     │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
 ### Technology Stack
 
-| Layer              | Technology                    | Version | Purpose                        |
-| ------------------ | ----------------------------- | ------- | ------------------------------ |
-| Frontend Framework | Next.js                       | 14      | SSR, routing, React framework  |
-| UI Library         | React                         | 18      | Component-based UI             |
-| Styling            | Tailwind CSS                  | 3       | Utility-first CSS              |
-| Visualization      | HTML5 Canvas or D3.js         | —       | Simulation panel animation     |
-| Backend            | FastAPI                       | 0.109+  | REST + WebSocket API server    |
-| Runtime            | Python                        | 3.12    | Backend runtime                |
-| Agent Framework    | OpenClaw                      | Latest  | Multi-agent orchestration      |
-| Primary LLM        | Anthropic Claude Sonnet       | Latest  | Complex reasoning              |
-| Secondary LLM      | OpenAI GPT-4o-mini            | Latest  | Routine tasks                  |
-| Fallback LLM       | Ollama                        | Latest  | Local inference                |
-| Storage            | SQLite                        | 3       | Persistent source/task storage |
-| Cache              | Redis                         | 7+      | Ephemeral state, sessions      |
-| File Parsing       | PyPDF2, python-docx, openpyxl | —       | Document text extraction       |
-| Web Search         | Tavily API                    | —       | Real-time web search           |
+| Layer              | Technology               | Version | Purpose                            |
+| ------------------ | ------------------------ | ------- | ---------------------------------- |
+| Frontend Framework | React + Vite             | 19      | SPA with fast dev tooling          |
+| Styling            | Tailwind CSS             | 3       | Utility-first CSS                  |
+| Visualization      | HTML5 Canvas or D3.js    | —       | Simulation panel animation         |
+| Backend            | Express + ws             | Latest  | REST + WebSocket API server        |
+| Runtime            | Node.js                  | 22+     | Backend runtime (matches OpenClaw) |
+| Agent Framework    | OpenClaw                 | Latest  | Multi-agent orchestration          |
+| Primary LLM        | Anthropic Claude Sonnet  | Latest  | Complex reasoning                  |
+| Secondary LLM      | OpenAI GPT-4o-mini       | Latest  | Routine tasks                      |
+| Fallback LLM       | Ollama                   | Latest  | Local inference                    |
+| Storage            | SQLite                   | 3       | Persistent source/task storage     |
+| Cache              | Redis                    | 7+      | Ephemeral state, sessions          |
+| Frontend Hosting   | Vercel                   | —       | CDN-hosted SPA                     |
+| Backend Hosting    | AWS Lightsail            | —       | VPS for backend + OpenClaw Gateway |
+| File Parsing       | pdf-parse, mammoth, xlsx | —       | Document text extraction           |
+| Web Search         | Tavily API               | —       | Real-time web search               |
 
 ---
 
@@ -879,9 +877,7 @@ interface SourceCitation {
 | Tavily / SerpAPI | Web search for Research Synthesizer agents | Should Have                           |
 | SMTP / SendGrid  | Email sending (with user confirmation)     | Stretch Goal (demo shows prompt only) |
 
-
 ---
-
 
 # SWARM — UX Design, Release Plan, and Risks
 
