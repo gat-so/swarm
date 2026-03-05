@@ -1,8 +1,29 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import './ChatPanel.css';
 
+/* ---- Types ---- */
+export interface ChatMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  created_at: string;
+}
+
+export interface SessionMetadata {
+  emoji: string | null;
+  title: string | null;
+  description: string | null;
+  suggestions: string[] | null;
+}
+
 interface ChatPanelProps {
   checkedSourceCount: number;
+  metadata: SessionMetadata | null;
+  messages: ChatMessage[];
+  isStreaming: boolean;
+  streamingText: string;
+  onSendMessage: (message: string) => void;
+  metadataLoading: boolean;
 }
 
 /* ---- Icons ---- */
@@ -73,6 +94,21 @@ const SendIcon = () => (
   </svg>
 );
 
+const EmptyChatIcon = () => (
+  <svg
+    viewBox="0 0 64 64"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.5"
+    className="empty-state__icon"
+  >
+    <path d="M52 38a4 4 0 01-4 4H18l-8 8V14a4 4 0 014-4h34a4 4 0 014 4z" />
+    <line x1="20" y1="22" x2="44" y2="22" />
+    <line x1="20" y1="28" x2="38" y2="28" />
+    <line x1="20" y1="34" x2="32" y2="34" />
+  </svg>
+);
+
 /* ---- Types ---- */
 type GoalType = 'default' | 'learning' | 'custom';
 type LengthType = 'default' | 'longer' | 'shorter';
@@ -89,7 +125,15 @@ const goalHelpers: Record<GoalType, string> = {
 };
 
 /* ---- Component ---- */
-export default function ChatPanel({ checkedSourceCount }: ChatPanelProps) {
+export default function ChatPanel({
+  checkedSourceCount,
+  metadata,
+  messages,
+  isStreaming,
+  streamingText,
+  onSendMessage,
+  metadataLoading,
+}: ChatPanelProps) {
   const [inputValue, setInputValue] = useState('');
   const [configOpen, setConfigOpen] = useState(false);
   const [kebabOpen, setKebabOpen] = useState(false);
@@ -102,6 +146,11 @@ export default function ChatPanel({ checkedSourceCount }: ChatPanelProps) {
   const kebabRef = useRef<HTMLDivElement>(null);
   const configTriggerRef = useRef<HTMLButtonElement>(null);
   const configDialogRef = useRef<HTMLDivElement>(null);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  const hasMetadata = metadata?.emoji || metadata?.title || metadata?.description;
+  const hasSources = checkedSourceCount > 0;
+  const hasMessages = messages.length > 0;
 
   // Auto-resize textarea
   useEffect(() => {
@@ -111,6 +160,11 @@ export default function ChatPanel({ checkedSourceCount }: ChatPanelProps) {
       ta.style.height = `${ta.scrollHeight}px`;
     }
   }, [inputValue]);
+
+  // Auto-scroll to bottom on new messages
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages, streamingText]);
 
   // Close kebab popover on outside click
   useEffect(() => {
@@ -131,10 +185,8 @@ export default function ChatPanel({ checkedSourceCount }: ChatPanelProps) {
     const dialog = configDialogRef.current;
     if (!dialog) return;
 
-    // Capture ref for cleanup
     const triggerEl = configTriggerRef.current;
 
-    // Focus the first focusable element inside the dialog
     const focusableSelector =
       'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
     const firstFocusable = dialog.querySelector<HTMLElement>(focusableSelector);
@@ -146,7 +198,6 @@ export default function ChatPanel({ checkedSourceCount }: ChatPanelProps) {
         return;
       }
 
-      // Focus trap
       if (e.key === 'Tab') {
         const focusableItems =
           dialog.querySelectorAll<HTMLElement>(focusableSelector);
@@ -172,7 +223,6 @@ export default function ChatPanel({ checkedSourceCount }: ChatPanelProps) {
     document.addEventListener('keydown', handleKeyDown);
     return () => {
       document.removeEventListener('keydown', handleKeyDown);
-      // Restore focus to trigger
       triggerEl?.focus();
     };
   }, [configOpen]);
@@ -188,8 +238,8 @@ export default function ChatPanel({ checkedSourceCount }: ChatPanelProps) {
   };
 
   const handleSend = () => {
-    if (!inputValue.trim()) return;
-    // For now, just clear — no backend integration
+    if (!inputValue.trim() || isStreaming) return;
+    onSendMessage(inputValue.trim());
     setInputValue('');
   };
 
@@ -199,6 +249,22 @@ export default function ChatPanel({ checkedSourceCount }: ChatPanelProps) {
       handleSend();
     }
   };
+
+  const handleSuggestionClick = (suggestion: string) => {
+    if (isStreaming) return;
+    onSendMessage(suggestion);
+  };
+
+  // Parse suggestions from metadata
+  const suggestions: string[] = (() => {
+    if (!metadata?.suggestions) return [];
+    if (Array.isArray(metadata.suggestions)) return metadata.suggestions;
+    try {
+      const parsed: unknown = JSON.parse(metadata.suggestions as unknown as string);
+      if (Array.isArray(parsed)) return parsed as string[];
+    } catch { /* ignore */ }
+    return [];
+  })();
 
   return (
     <>
@@ -243,78 +309,129 @@ export default function ChatPanel({ checkedSourceCount }: ChatPanelProps) {
           </div>
         </div>
 
-        {/* Messages */}
+        {/* Messages area */}
         <div className="chat-messages">
-          <div className="chat-title-section">
-            <span className="chat-title-section__emoji">🐝</span>
-            <h1 className="chat-title-section__heading">
-              SWARM: Decision Intelligence and Multi-Agent Simulation Framework
-            </h1>
-            <span className="chat-title-section__badge">
-              {checkedSourceCount} sources
-            </span>
-          </div>
+          {/* Empty state — no sources and no metadata */}
+          {!hasSources && !hasMetadata && !hasMessages && (
+            <div className="chat-empty-state">
+              <EmptyChatIcon />
+              <span className="chat-empty-state__title">Start a conversation</span>
+              <span className="chat-empty-state__text">
+                Add sources to your session, then ask questions about them.
+                The AI will use your sources as knowledge.
+              </span>
+            </div>
+          )}
 
-          <div className="chat-message">
-            <p>
-              The provided documents describe <strong>SWARM</strong> (Simulated
-              Workforce of Autonomous Reasoning Minds), an advanced{' '}
-              <strong>multi-agent decision intelligence platform</strong>{' '}
-              designed for the CCSD Hackathon 2026. Built on the{' '}
-              <strong>OpenClaw framework</strong>, the system replaces
-              traditional, slow human deliberation with{' '}
-              <strong>autonomous AI agents</strong> that simulate complex
-              organizational roles like Mayors, CFOs, and Hospital Directors.
-              These agents follow a{' '}
-              <strong>structured seven-phase negotiation protocol</strong>
-              —including debate, coalition building, and weighted voting—to
-              resolve high-stakes crises using <strong>
-                real-world data
-              </strong>{' '}
-              and <strong>game theory</strong>.
-            </p>
-          </div>
+          {/* Metadata loading state */}
+          {metadataLoading && !hasMetadata && (
+            <div className="chat-empty-state">
+              <div className="chat-loading-pulse" />
+              <span className="chat-empty-state__title">Analyzing sources…</span>
+              <span className="chat-empty-state__text">
+                Generating a summary and suggested questions from your sources.
+              </span>
+            </div>
+          )}
 
-          <div className="chat-actions">
-            <button
-              className="icon-btn"
-              aria-label="Save to note"
-              title="Save to note"
-            >
-              <SaveIcon />
-            </button>
-            <button className="icon-btn" aria-label="Copy" title="Copy">
-              <CopyIcon />
-            </button>
-            <button
-              className="icon-btn"
-              aria-label="Thumbs up"
-              title="Thumbs up"
-            >
-              <ThumbsUpIcon />
-            </button>
-            <button
-              className="icon-btn"
-              aria-label="Thumbs down"
-              title="Thumbs down"
-            >
-              <ThumbsDownIcon />
-            </button>
-          </div>
+          {/* Dynamic title section — from AI-generated metadata */}
+          {hasMetadata && (
+            <div className="chat-title-section">
+              <span className="chat-title-section__emoji">{metadata?.emoji || '📄'}</span>
+              <h1 className="chat-title-section__heading">
+                {metadata?.title || 'Untitled Session'}
+              </h1>
+              <span className="chat-title-section__badge">
+                {checkedSourceCount} sources
+              </span>
+            </div>
+          )}
 
-          <div className="chat-suggestions">
-            <button className="chat-suggestion-chip">
-              How do the six specialized AI agents simulate a city council
-              negotiation?
-            </button>
-            <button className="chat-suggestion-chip">
-              Explain the 7-phase protocol for reaching an autonomous decision.
-            </button>
-            <button className="chat-suggestion-chip">
-              How does SWARM compare AI-negotiated outcomes to real-world
-              historical data?
-            </button>
-          </div>
+          {/* Description */}
+          {hasMetadata && metadata?.description && !hasMessages && (
+            <div className="chat-message">
+              <p>{metadata.description}</p>
+            </div>
+          )}
+
+          {/* Chat messages */}
+          {messages.map((msg) => (
+            <div
+              key={msg.id}
+              className={msg.role === 'user' ? 'chat-user-message' : 'chat-message'}
+            >
+              {msg.role === 'assistant' ? (
+                <p>{msg.content}</p>
+              ) : (
+                msg.content
+              )}
+            </div>
+          ))}
+
+          {/* Streaming response */}
+          {isStreaming && streamingText && (
+            <div className="chat-message chat-message--streaming">
+              <p>{streamingText}</p>
+            </div>
+          )}
+
+          {/* Streaming indicator */}
+          {isStreaming && !streamingText && (
+            <div className="chat-message chat-message--streaming">
+              <div className="chat-typing-indicator">
+                <span></span>
+                <span></span>
+                <span></span>
+              </div>
+            </div>
+          )}
+
+          {/* Action buttons on last assistant message */}
+          {hasMessages && !isStreaming && messages[messages.length - 1]?.role === 'assistant' && (
+            <div className="chat-actions">
+              <button
+                className="icon-btn"
+                aria-label="Save to note"
+                title="Save to note"
+              >
+                <SaveIcon />
+              </button>
+              <button className="icon-btn" aria-label="Copy" title="Copy">
+                <CopyIcon />
+              </button>
+              <button
+                className="icon-btn"
+                aria-label="Thumbs up"
+                title="Thumbs up"
+              >
+                <ThumbsUpIcon />
+              </button>
+              <button
+                className="icon-btn"
+                aria-label="Thumbs down"
+                title="Thumbs down"
+              >
+                <ThumbsDownIcon />
+              </button>
+            </div>
+          )}
+
+          {/* Suggestion chips */}
+          {suggestions.length > 0 && !hasMessages && (
+            <div className="chat-suggestions">
+              {suggestions.map((q, i) => (
+                <button
+                  key={i}
+                  className="chat-suggestion-chip"
+                  onClick={() => handleSuggestionClick(q)}
+                >
+                  {q}
+                </button>
+              ))}
+            </div>
+          )}
+
+          <div ref={messagesEndRef} />
         </div>
 
         {/* Input bar */}
@@ -325,10 +442,11 @@ export default function ChatPanel({ checkedSourceCount }: ChatPanelProps) {
               value={inputValue}
               onChange={(e) => setInputValue(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder="Start typing..."
+              placeholder={hasSources ? 'Ask about your sources...' : 'Add sources to start chatting...'}
               rows={1}
               id="chat-input"
               aria-label="Message input"
+              disabled={isStreaming}
             />
             <span className="chat-source-badge">
               {checkedSourceCount} sources
@@ -337,7 +455,7 @@ export default function ChatPanel({ checkedSourceCount }: ChatPanelProps) {
           <button
             className="chat-send-btn"
             onClick={handleSend}
-            disabled={!inputValue.trim()}
+            disabled={!inputValue.trim() || isStreaming}
             aria-label="Send message"
             title="Send message"
           >

@@ -25,6 +25,10 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
+    emoji TEXT,
+    title TEXT,
+    description TEXT,
+    suggestions TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
@@ -36,10 +40,37 @@ db.exec(`
     file_type TEXT NOT NULL DEFAULT 'other',
     file_size INTEGER NOT NULL DEFAULT 0,
     checked INTEGER NOT NULL DEFAULT 1,
+    remote_path TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+  );
+
+  CREATE TABLE IF NOT EXISTS messages (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    role TEXT NOT NULL,
+    content TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
   );
 `);
+
+// Migrate: add new columns if they don't exist (for existing databases)
+try {
+  db.exec(`ALTER TABLE sessions ADD COLUMN emoji TEXT`);
+} catch { /* column already exists */ }
+try {
+  db.exec(`ALTER TABLE sessions ADD COLUMN title TEXT`);
+} catch { /* column already exists */ }
+try {
+  db.exec(`ALTER TABLE sessions ADD COLUMN description TEXT`);
+} catch { /* column already exists */ }
+try {
+  db.exec(`ALTER TABLE sessions ADD COLUMN suggestions TEXT`);
+} catch { /* column already exists */ }
+try {
+  db.exec(`ALTER TABLE sources ADD COLUMN remote_path TEXT`);
+} catch { /* column already exists */ }
 
 // Create a default session if none exists
 const sessionCount = db.prepare('SELECT COUNT(*) as count FROM sessions').get() as { count: number };

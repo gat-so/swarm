@@ -327,3 +327,88 @@
 .configure-chat__save-btn:hover {
   background: var(--color-accent-hover);
 }
+
+/* Chat empty state */
+.chat-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  text-align: center;
+  padding: var(--space-2xl);
+  gap: var(--space-sm);
+  color: var(--color-text-tertiary);
+}
+
+.chat-empty-state .empty-state__icon {
+  width: 56px;
+  height: 56px;
+  margin-bottom: var(--space-sm);
+  color: var(--color-text-tertiary);
+  opacity: 0.5;
+}
+
+.chat-empty-state__title {
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text-secondary);
+}
+
+.chat-empty-state__text {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-tertiary);
+  max-width: 280px;
+  line-height: var(--line-height-relaxed);
+}
+
+/* Loading pulse */
+.chat-loading-pulse {
+  width: 48px;
+  height: 48px;
+  border-radius: var(--radius-full);
+  background: var(--color-accent);
+  opacity: 0.15;
+  animation: chat-pulse 1.5s ease-in-out infinite;
+  margin-bottom: var(--space-sm);
+}
+
+@keyframes chat-pulse {
+  0%, 100% { transform: scale(0.8); opacity: 0.15; }
+  50% { transform: scale(1.2); opacity: 0.3; }
+}
+
+/* Typing indicator */
+.chat-typing-indicator {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: var(--space-xs) 0;
+}
+
+.chat-typing-indicator span {
+  display: block;
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-full);
+  background: var(--color-text-tertiary);
+  animation: chat-dot-bounce 1.4s ease-in-out infinite;
+}
+
+.chat-typing-indicator span:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.chat-typing-indicator span:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+@keyframes chat-dot-bounce {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
+  30% { transform: translateY(-6px); opacity: 1; }
+}
+
+/* Streaming message */
+.chat-message--streaming {
+  opacity: 0.85;
+}

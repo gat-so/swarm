@@ -8,7 +8,7 @@ const router = Router();
 router.get('/', (_req, res) => {
   console.log('[GET /api/sessions] Fetching all sessions');
   const sessions = db
-    .prepare('SELECT id, name, created_at FROM sessions ORDER BY created_at DESC')
+    .prepare('SELECT id, name, emoji, title, description, suggestions, created_at FROM sessions ORDER BY created_at DESC')
     .all();
 
   res.json(sessions);
@@ -27,10 +27,52 @@ router.post('/', (req, res) => {
   );
 
   const session = db
-    .prepare('SELECT id, name, created_at FROM sessions WHERE id = ?')
+    .prepare('SELECT id, name, emoji, title, description, suggestions, created_at FROM sessions WHERE id = ?')
     .get(id);
 
   res.status(201).json(session);
+});
+
+// PATCH /api/sessions/:id
+router.patch('/:id', (req, res) => {
+  const { id } = req.params;
+  console.log('[PATCH /api/sessions/:id] id:', id);
+
+  const { emoji, title, description, suggestions, name } = req.body as {
+    emoji?: string;
+    title?: string;
+    description?: string;
+    suggestions?: string[];
+    name?: string;
+  };
+
+  const fields: string[] = [];
+  const values: unknown[] = [];
+
+  if (name !== undefined) { fields.push('name = ?'); values.push(name); }
+  if (emoji !== undefined) { fields.push('emoji = ?'); values.push(emoji); }
+  if (title !== undefined) { fields.push('title = ?'); values.push(title); }
+  if (description !== undefined) { fields.push('description = ?'); values.push(description); }
+  if (suggestions !== undefined) { fields.push('suggestions = ?'); values.push(JSON.stringify(suggestions)); }
+
+  if (fields.length === 0) {
+    res.status(400).json({ error: 'No fields to update' });
+    return;
+  }
+
+  values.push(id);
+  const result = db.prepare(`UPDATE sessions SET ${fields.join(', ')} WHERE id = ?`).run(...values);
+
+  if (result.changes === 0) {
+    res.status(404).json({ error: 'Session not found' });
+    return;
+  }
+
+  const session = db
+    .prepare('SELECT id, name, emoji, title, description, suggestions, created_at FROM sessions WHERE id = ?')
+    .get(id);
+
+  res.json(session);
 });
 
 // DELETE /api/sessions/:id
@@ -54,3 +96,4 @@ router.delete('/:id', (req, res) => {
 });
 
 export default router;
+
