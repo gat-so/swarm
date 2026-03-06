@@ -6,7 +6,14 @@ import type {
   SourceFile,
   Session,
 } from './components/SourcesPanel/SourcesPanel';
-import type { ChatMessage, SessionMetadata } from './components/ChatPanel/ChatPanel';
+import type {
+  ChatMessage,
+  SessionMetadata,
+  SimulationMode,
+  SimulationEvent,
+  PlanData,
+  AgentUpdateData,
+} from './components/ChatPanel/ChatPanel';
 
 interface SessionRow {
   id: string;
@@ -30,12 +37,16 @@ function App() {
   const [streamingText, setStreamingText] = useState('');
   const [metadataLoading, setMetadataLoading] = useState(false);
 
+  // Simulation state
+  const [simulationMode, setSimulationMode] = useState<SimulationMode>('idle');
+  const [simulationEvents, setSimulationEvents] = useState<SimulationEvent[]>([]);
+  const [executingPlan, setExecutingPlan] = useState(false);
+
   // Polling ref for metadata
   const metadataPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const checkedCount = sources.filter((s) => s.checked).length;
 
-  // Helper: parse session row into metadata
   const parseSessionMetadata = useCallback((session: SessionRow): SessionMetadata => {
     let suggestions: string[] | null = null;
     if (session.suggestions) {
@@ -113,7 +124,6 @@ function App() {
         const current = data.find((s) => s.id === currentSessionId);
         if (current) {
           setSessionMetadata(parseSessionMetadata(current));
-          // Update session name in sessions list if title is available
           if (current.title) {
             setSessions((prev) =>
               prev.map((s) => (s.id === current.id ? { ...s, name: current.title! } : s)),
@@ -133,13 +143,11 @@ function App() {
     };
   }, []);
 
-  // Handle toggling checked state — persist to backend
   const handleSourcesChange = useCallback(
     (updated: SourceFile[]) => {
       const prev = sources;
       setSources(updated);
 
-      // Find which sources changed and patch them
       for (const source of updated) {
         const old = prev.find((s) => s.id === source.id);
         if (old && old.checked !== source.checked) {
@@ -154,12 +162,10 @@ function App() {
     [sources],
   );
 
-  // Handle file uploads
   const handleUploadFiles = useCallback(
     (files: FileList) => {
       if (!currentSessionId) return;
 
-      // Check if there are currently no sources (first upload)
       const hadNoSources = sources.length === 0;
 
       Array.from(files).forEach((file) => {
@@ -174,7 +180,6 @@ function App() {
         else if (['mp3', 'wav', 'ogg', 'flac', 'm4a'].includes(ext))
           type = 'audio';
 
-        // Add temp source with uploading state
         const tempSource: SourceFile = {
           id: tempId,
           name: file.name,
@@ -186,7 +191,6 @@ function App() {
 
         setSources((prev) => [...prev, tempSource]);
 
-        // Upload via XHR for progress tracking
         const xhr = new XMLHttpRequest();
         const formData = new FormData();
         formData.append('file', file);
@@ -226,13 +230,11 @@ function App() {
               ),
             );
 
-            // If this was the first source, start polling for metadata
             if (hadNoSources) {
               setMetadataLoading(true);
               startMetadataPolling();
             }
           } else {
-            // Remove failed upload
             setSources((prev) => prev.filter((s) => s.id !== tempId));
           }
         });
@@ -248,14 +250,13 @@ function App() {
     [currentSessionId, sources],
   );
 
-  // Poll for metadata updates (after first source upload)
   const startMetadataPolling = useCallback(() => {
     if (metadataPollRef.current) {
       clearInterval(metadataPollRef.current);
     }
 
     let attempts = 0;
-    const maxAttempts = 30; // 30 * 2s = 60s max
+    const maxAttempts = 30;
 
     metadataPollRef.current = setInterval(() => {
       attempts++;
@@ -270,11 +271,9 @@ function App() {
         .then((data: SessionRow[]) => {
           const current = data.find((s) => s.id === currentSessionId);
           if (current?.emoji || current?.title) {
-            // Metadata is ready!
             setSessionMetadata(parseSessionMetadata(current));
             setMetadataLoading(false);
             if (metadataPollRef.current) clearInterval(metadataPollRef.current);
-            // Update session name in sessions list with the generated title
             if (current.title) {
               setSessions((prev) =>
                 prev.map((s) => (s.id === current.id ? { ...s, name: current.title! } : s)),
@@ -286,101 +285,126 @@ function App() {
     }, 2000);
   }, [currentSessionId, parseSessionMetadata]);
 
-  // Send a chat message
+  // SSE stream reader helper
+  const readSSEStream = useCallback(
+    (
+      response: Response,
+      handlers: {
+        onPlan?: (planId: string, plan: PlanData) => void;
+        onDone?: (text: string, messageType: string) => void;
+        onSimEvent?: (event: SimulationEvent) => void;
+        onAgentUpdate?: (data: AgentUpdateData & { timestamp: number }) => void;
+        onExecutionComplete?: (text: string) => void;
+        onError?: (error: string) => void;
+      },
+    ) => {
+      if (!response.ok || !response.body) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      const readChunk = (): Promise<void> => {
+        return reader.read().then(({ done, value }) => {
+          if (done) return;
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue;
+            try {
+              const data = JSON.parse(line.slice(6)) as Record<string, unknown>;
+
+              if (data.type === 'plan') {
+                handlers.onPlan?.(
+                  data.planId as string,
+                  data.plan as PlanData,
+                );
+              } else if (data.type === 'done') {
+                handlers.onDone?.(
+                  data.text as string,
+                  (data.messageType as string) || 'text',
+                );
+              } else if (data.type === 'sim_event') {
+                handlers.onSimEvent?.(data.event as SimulationEvent);
+              } else if (data.type === 'agent_update') {
+                handlers.onAgentUpdate?.(data as unknown as AgentUpdateData & { timestamp: number });
+              } else if (data.type === 'execution_complete') {
+                handlers.onExecutionComplete?.(data.text as string);
+              } else if (data.type === 'error') {
+                handlers.onError?.(data.error as string);
+              }
+            } catch {
+              // partial line, ignore
+            }
+          }
+
+          return readChunk();
+        });
+      };
+
+      return readChunk();
+    },
+    [],
+  );
+
+  // Send a chat message (goes through planning-first flow)
   const handleSendMessage = useCallback(
     (message: string) => {
-      if (!currentSessionId || isStreaming) return;
+      if (!currentSessionId || isStreaming || executingPlan) return;
 
-      // Optimistically add user message
       const userMsg: ChatMessage = {
         id: crypto.randomUUID(),
         role: 'user',
         content: message,
+        message_type: 'text',
         created_at: new Date().toISOString(),
       };
       setMessages((prev) => [...prev, userMsg]);
       setIsStreaming(true);
       setStreamingText('');
 
-      // Stream response via SSE
       fetch('/api/chat/send', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ sessionId: currentSessionId, message }),
       })
         .then((res) => {
-          if (!res.ok || !res.body) {
-            throw new Error(`HTTP ${res.status}`);
-          }
-
-          const reader = res.body.getReader();
-          const decoder = new TextDecoder();
-          let buffer = '';
-          let accumulated = '';
-
-          const readChunk = (): Promise<void> => {
-            return reader.read().then(({ done, value }) => {
-              if (done) {
-                // Stream ended — finalize
-                if (accumulated) {
-                  const assistantMsg: ChatMessage = {
-                    id: crypto.randomUUID(),
-                    role: 'assistant',
-                    content: accumulated,
-                    created_at: new Date().toISOString(),
-                  };
-                  setMessages((prev) => [...prev, assistantMsg]);
-                }
-                setIsStreaming(false);
-                setStreamingText('');
-                return;
-              }
-
-              buffer += decoder.decode(value, { stream: true });
-              const lines = buffer.split('\n');
-              buffer = lines.pop() || '';
-
-              for (const line of lines) {
-                if (line.startsWith('data: ')) {
-                  try {
-                    const data = JSON.parse(line.slice(6)) as {
-                      type: string;
-                      text?: string;
-                      error?: string;
-                    };
-
-                    if (data.type === 'chunk' && data.text) {
-                      accumulated += data.text;
-                      setStreamingText(accumulated);
-                    } else if (data.type === 'done') {
-                      const finalText = data.text || accumulated;
-                      const assistantMsg: ChatMessage = {
-                        id: crypto.randomUUID(),
-                        role: 'assistant',
-                        content: finalText,
-                        created_at: new Date().toISOString(),
-                      };
-                      setMessages((prev) => [...prev, assistantMsg]);
-                      setIsStreaming(false);
-                      setStreamingText('');
-                      return;
-                    } else if (data.type === 'error') {
-                      console.error('Chat error:', data.error);
-                      setIsStreaming(false);
-                      setStreamingText('');
-                      return;
-                    }
-                  } catch {
-                    // Ignore parse errors for partial lines
-                  }
-                }
-              }
-
-              return readChunk();
-            });
-          };
-
-          return readChunk();
+          return readSSEStream(res, {
+            onPlan: (planId, plan) => {
+              const planMsg: ChatMessage = {
+                id: planId,
+                role: 'assistant',
+                content: JSON.stringify(plan),
+                message_type: 'plan',
+                created_at: new Date().toISOString(),
+              };
+              setMessages((prev) => [...prev, planMsg]);
+              setIsStreaming(false);
+              setStreamingText('');
+            },
+            onDone: (text) => {
+              const assistantMsg: ChatMessage = {
+                id: crypto.randomUUID(),
+                role: 'assistant',
+                content: text,
+                message_type: 'text',
+                created_at: new Date().toISOString(),
+              };
+              setMessages((prev) => [...prev, assistantMsg]);
+              setIsStreaming(false);
+              setStreamingText('');
+            },
+            onError: (error) => {
+              console.error('Chat error:', error);
+              setIsStreaming(false);
+              setStreamingText('');
+            },
+          });
         })
         .catch((err) => {
           console.error('Chat send error:', err);
@@ -388,7 +412,69 @@ function App() {
           setStreamingText('');
         });
     },
-    [currentSessionId, isStreaming],
+    [currentSessionId, isStreaming, executingPlan, readSSEStream],
+  );
+
+  // Execute a plan
+  const handleExecutePlan = useCallback(
+    (planId: string) => {
+      if (!currentSessionId || executingPlan) return;
+
+      setExecutingPlan(true);
+      setSimulationMode('recording');
+      setSimulationEvents([]);
+
+      fetch('/api/chat/execute', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId: currentSessionId, planId }),
+      })
+        .then((res) => {
+          return readSSEStream(res, {
+            onSimEvent: (event) => {
+              setSimulationEvents((prev) => [...prev, event]);
+            },
+            onAgentUpdate: (data) => {
+              const updateMsg: ChatMessage = {
+                id: crypto.randomUUID(),
+                role: 'assistant',
+                content: JSON.stringify({
+                  agentId: data.agentId,
+                  agentName: data.agentName,
+                  agentColor: data.agentColor,
+                  message: data.message,
+                }),
+                message_type: 'agent_update',
+                created_at: new Date().toISOString(),
+              };
+              setMessages((prev) => [...prev, updateMsg]);
+            },
+            onExecutionComplete: (text) => {
+              const resultMsg: ChatMessage = {
+                id: crypto.randomUUID(),
+                role: 'assistant',
+                content: text,
+                message_type: 'execution_result',
+                created_at: new Date().toISOString(),
+              };
+              setMessages((prev) => [...prev, resultMsg]);
+              setExecutingPlan(false);
+              setSimulationMode('replay');
+            },
+            onError: (error) => {
+              console.error('Execution error:', error);
+              setExecutingPlan(false);
+              setSimulationMode('replay');
+            },
+          });
+        })
+        .catch((err) => {
+          console.error('Execute error:', err);
+          setExecutingPlan(false);
+          setSimulationMode('idle');
+        });
+    },
+    [currentSessionId, executingPlan, readSSEStream],
   );
 
   // Create new session
@@ -404,6 +490,9 @@ function App() {
         setCurrentSessionId(session.id);
         setSessionMetadata(null);
         setMessages([]);
+        setSimulationMode('idle');
+        setSimulationEvents([]);
+        setExecutingPlan(false);
       })
       .catch(console.error);
   }, []);
@@ -415,9 +504,11 @@ function App() {
     setSessionMetadata(null);
     setStreamingText('');
     setIsStreaming(false);
+    setSimulationMode('idle');
+    setSimulationEvents([]);
+    setExecutingPlan(false);
   }, []);
 
-  // Delete a source
   const handleDeleteSource = useCallback((id: string) => {
     fetch(`/api/sources/${id}`, { method: 'DELETE' })
       .then(() => {
@@ -426,7 +517,6 @@ function App() {
       .catch(console.error);
   }, []);
 
-  // Delete a session
   const handleDeleteSession = useCallback(
     (sessionId: string) => {
       fetch(`/api/sessions/${sessionId}`, { method: 'DELETE' })
@@ -434,7 +524,6 @@ function App() {
           if (!res.ok) throw new Error(`Delete failed: ${res.status}`);
           setSessions((prev) => {
             const remaining = prev.filter((s) => s.id !== sessionId);
-            // If we deleted the current session, switch to the first remaining
             if (sessionId === currentSessionId && remaining.length > 0 && remaining[0]) {
               setCurrentSessionId(remaining[0].id);
             } else if (remaining.length === 0) {
@@ -478,9 +567,14 @@ function App() {
         isStreaming={isStreaming}
         streamingText={streamingText}
         onSendMessage={handleSendMessage}
+        onExecutePlan={handleExecutePlan}
+        executingPlan={executingPlan}
         metadataLoading={metadataLoading}
       />
-      <SimulationPanel />
+      <SimulationPanel
+        mode={simulationMode}
+        simulationEvents={simulationEvents}
+      />
     </div>
   );
 }

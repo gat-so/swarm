@@ -74,6 +74,50 @@ export async function uploadToVPS(
  * Delete a file from the VPS OpenClaw workspace via SFTP.
  * Accepts the container-internal path (as stored in DB) and converts to host path.
  */
+/**
+ * Download a file from the VPS OpenClaw workspace via SFTP.
+ * Accepts the container-internal path (as returned by OpenClaw) and saves to a local destination.
+ */
+export async function downloadFromVPS(
+  containerPath: string,
+  localDestPath: string,
+): Promise<void> {
+  const sftp = new SftpClient();
+
+  const hostPath = containerPath.replace(OPENCLAW_CONTAINER_WORKSPACE, VPS_OPENCLAW_WORKSPACE);
+
+  try {
+    const privateKey = fs.readFileSync(VPS_SSH_KEY_PATH, 'utf-8');
+
+    await sftp.connect({
+      host: VPS_HOST,
+      port: VPS_PORT,
+      username: VPS_USER,
+      privateKey,
+      passphrase: VPS_SSH_PASSPHRASE || '',
+    });
+
+    const exists = await sftp.exists(hostPath);
+    if (!exists) {
+      throw new Error(`Remote file not found: ${hostPath}`);
+    }
+
+    const destDir = path.dirname(localDestPath);
+    if (!fs.existsSync(destDir)) {
+      fs.mkdirSync(destDir, { recursive: true });
+    }
+
+    await sftp.get(hostPath, localDestPath);
+
+    console.log(`[SFTP] Downloaded ${hostPath} → ${localDestPath}`);
+  } catch (err) {
+    console.error(`[SFTP] Download failed for ${hostPath}:`, err);
+    throw err;
+  } finally {
+    await sftp.end();
+  }
+}
+
 export async function deleteFromVPS(containerPath: string): Promise<void> {
   const sftp = new SftpClient();
 

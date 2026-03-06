@@ -50,6 +50,7 @@ db.exec(`
     session_id TEXT NOT NULL,
     role TEXT NOT NULL,
     content TEXT NOT NULL,
+    message_type TEXT NOT NULL DEFAULT 'text',
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
   );
@@ -70,6 +71,9 @@ try {
 } catch { /* column already exists */ }
 try {
   db.exec(`ALTER TABLE sources ADD COLUMN remote_path TEXT`);
+} catch { /* column already exists */ }
+try {
+  db.exec(`ALTER TABLE messages ADD COLUMN message_type TEXT NOT NULL DEFAULT 'text'`);
 } catch { /* column already exists */ }
 
 // Create a default session if none exists

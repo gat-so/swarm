@@ -1,6 +1,9 @@
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
+import path from 'node:path';
+import fs from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import sourcesRouter from './routes/sources.js';
 import sessionsRouter from './routes/sessions.js';
 import chatRouter from './routes/chat.js';
@@ -8,6 +11,14 @@ import openclawClient from './openclaw.js';
 
 // Ensure DB is initialized on startup
 import './db.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const DOWNLOADS_DIR = path.join(__dirname, '..', 'downloads');
+
+if (!fs.existsSync(DOWNLOADS_DIR)) {
+  fs.mkdirSync(DOWNLOADS_DIR, { recursive: true });
+}
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -27,6 +38,19 @@ app.get('/health', (_req, res) => {
 app.use('/api/sources', sourcesRouter);
 app.use('/api/sessions', sessionsRouter);
 app.use('/api/chat', chatRouter);
+
+app.get('/api/files/download/:filename', (req, res) => {
+  const { filename } = req.params;
+  const safeName = path.basename(filename);
+  const filePath = path.join(DOWNLOADS_DIR, safeName);
+
+  if (!fs.existsSync(filePath)) {
+    res.status(404).json({ error: 'File not found' });
+    return;
+  }
+
+  res.download(filePath, safeName.replace(/^[a-f0-9]+-/, ''));
+});
 
 const server = app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);

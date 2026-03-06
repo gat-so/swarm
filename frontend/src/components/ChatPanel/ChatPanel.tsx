@@ -1,4 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import type { Components } from 'react-markdown';
 import './ChatPanel.css';
 
 /* ---- Types ---- */
@@ -6,6 +9,7 @@ export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant';
   content: string;
+  message_type: 'text' | 'plan' | 'agent_update' | 'execution_result';
   created_at: string;
 }
 
@@ -16,6 +20,42 @@ export interface SessionMetadata {
   suggestions: string[] | null;
 }
 
+export interface PlanData {
+  needs_plan: boolean;
+  plan_summary: string;
+  agents: Array<{
+    id: string;
+    name: string;
+    role: string;
+    task: string;
+    color: string;
+  }>;
+  execution_order: string[][];
+  estimated_duration: number;
+  expected_output: string;
+}
+
+export interface AgentUpdateData {
+  agentId: string;
+  agentName: string;
+  agentColor: string;
+  message: string;
+}
+
+export type SimulationMode = 'idle' | 'recording' | 'replay';
+
+export interface SimulationEvent {
+  type: 'spawn' | 'move' | 'say' | 'move_and_say' | 'remove' | 'done';
+  agentId: string;
+  timestamp: number;
+  name?: string;
+  color?: string;
+  skinColor?: string;
+  x?: number;
+  y?: number;
+  message?: string;
+}
+
 interface ChatPanelProps {
   checkedSourceCount: number;
   metadata: SessionMetadata | null;
@@ -23,6 +63,8 @@ interface ChatPanelProps {
   isStreaming: boolean;
   streamingText: string;
   onSendMessage: (message: string) => void;
+  onExecutePlan: (planId: string) => void;
+  executingPlan: boolean;
   metadataLoading: boolean;
 }
 
@@ -109,6 +151,12 @@ const EmptyChatIcon = () => (
   </svg>
 );
 
+const PlayArrowIcon = () => (
+  <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18">
+    <path d="M8 5v14l11-7z" />
+  </svg>
+);
+
 /* ---- Types ---- */
 type GoalType = 'default' | 'learning' | 'custom';
 type LengthType = 'default' | 'longer' | 'shorter';
@@ -124,6 +172,124 @@ const goalHelpers: Record<GoalType, string> = {
   custom: 'Set a custom persona, tone, or focus for your conversation.',
 };
 
+/* ---- Markdown renderer ---- */
+
+const markdownComponents: Components = {
+  a: ({ href, children, ...props }) => {
+    const isDownload = href?.includes('/api/files/download/');
+    return (
+      <a
+        href={href}
+        target="_blank"
+        rel="noopener noreferrer"
+        {...(isDownload ? { download: '' } : {})}
+        {...props}
+      >
+        {children}
+      </a>
+    );
+  },
+};
+
+function MarkdownContent({ content }: { content: string }) {
+  return (
+    <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+      {content}
+    </ReactMarkdown>
+  );
+}
+
+/* ---- Sub-components ---- */
+
+function PlanCard({
+  plan,
+  planId,
+  onExecute,
+  executing,
+}: {
+  plan: PlanData;
+  planId: string;
+  onExecute: (planId: string) => void;
+  executing: boolean;
+}) {
+  return (
+    <div className="chat-plan-card">
+      <div className="chat-plan-card__header">
+        <span className="chat-plan-card__icon">📋</span>
+        <span className="chat-plan-card__title">Execution Plan</span>
+      </div>
+      <p className="chat-plan-card__summary">{plan.plan_summary}</p>
+
+      <div className="chat-plan-card__agents">
+        {plan.agents.map((agent) => (
+          <div key={agent.id} className="chat-plan-agent">
+            <span
+              className="chat-plan-agent__dot"
+              style={{ background: agent.color }}
+            />
+            <div className="chat-plan-agent__info">
+              <span className="chat-plan-agent__name">{agent.name}</span>
+              <span className="chat-plan-agent__task">{agent.task}</span>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="chat-plan-card__meta">
+        <span>{plan.agents.length} agents</span>
+        <span>~{Math.ceil(plan.estimated_duration / 60)} min</span>
+      </div>
+
+      <button
+        className="chat-execute-btn"
+        onClick={() => onExecute(planId)}
+        disabled={executing}
+      >
+        {executing ? (
+          <>
+            <span className="chat-execute-btn__spinner" />
+            Executing...
+          </>
+        ) : (
+          <>
+            <PlayArrowIcon />
+            Execute Plan
+          </>
+        )}
+      </button>
+    </div>
+  );
+}
+
+function AgentUpdateMessage({ data }: { data: AgentUpdateData }) {
+  return (
+    <div className="chat-agent-update">
+      <span
+        className="chat-agent-update__dot"
+        style={{ background: data.agentColor }}
+      />
+      <div className="chat-agent-update__content">
+        <span className="chat-agent-update__name">{data.agentName}</span>
+        <span className="chat-agent-update__text">{data.message}</span>
+      </div>
+    </div>
+  );
+}
+
+function ExecutionResultMessage({ content }: { content: string }) {
+  return (
+    <div className="chat-execution-result">
+      <div className="chat-execution-result__header">
+        <span>✅</span>
+        <span>Task Complete</span>
+      </div>
+      <div className="chat-execution-result__body markdown-body">
+        <MarkdownContent content={content} />
+      </div>
+    </div>
+  );
+}
+
 /* ---- Component ---- */
 export default function ChatPanel({
   checkedSourceCount,
@@ -132,6 +298,8 @@ export default function ChatPanel({
   isStreaming,
   streamingText,
   onSendMessage,
+  onExecutePlan,
+  executingPlan,
   metadataLoading,
 }: ChatPanelProps) {
   const [inputValue, setInputValue] = useState('');
@@ -152,7 +320,6 @@ export default function ChatPanel({
   const hasSources = checkedSourceCount > 0;
   const hasMessages = messages.length > 0;
 
-  // Auto-resize textarea
   useEffect(() => {
     const ta = textareaRef.current;
     if (ta) {
@@ -161,12 +328,10 @@ export default function ChatPanel({
     }
   }, [inputValue]);
 
-  // Auto-scroll to bottom on new messages
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, streamingText]);
 
-  // Close kebab popover on outside click
   useEffect(() => {
     if (!kebabOpen) return;
     const handler = (e: MouseEvent) => {
@@ -178,7 +343,6 @@ export default function ChatPanel({
     return () => document.removeEventListener('mousedown', handler);
   }, [kebabOpen]);
 
-  // Configure dialog: Escape key + focus trap + focus restore
   useEffect(() => {
     if (!configOpen) return;
 
@@ -238,7 +402,7 @@ export default function ChatPanel({
   };
 
   const handleSend = () => {
-    if (!inputValue.trim() || isStreaming) return;
+    if (!inputValue.trim() || isStreaming || executingPlan) return;
     onSendMessage(inputValue.trim());
     setInputValue('');
   };
@@ -251,11 +415,10 @@ export default function ChatPanel({
   };
 
   const handleSuggestionClick = (suggestion: string) => {
-    if (isStreaming) return;
+    if (isStreaming || executingPlan) return;
     onSendMessage(suggestion);
   };
 
-  // Parse suggestions from metadata
   const suggestions: string[] = (() => {
     if (!metadata?.suggestions) return [];
     if (Array.isArray(metadata.suggestions)) return metadata.suggestions;
@@ -265,6 +428,71 @@ export default function ChatPanel({
     } catch { /* ignore */ }
     return [];
   })();
+
+  const renderMessage = (msg: ChatMessage) => {
+    if (msg.role === 'user') {
+      return (
+        <div key={msg.id} className="chat-user-message">
+          {msg.content}
+        </div>
+      );
+    }
+
+    const msgType = msg.message_type || 'text';
+
+    if (msgType === 'plan') {
+      try {
+        const planData = JSON.parse(msg.content) as PlanData;
+        return (
+          <div key={msg.id} className="chat-message">
+            <PlanCard
+              plan={planData}
+              planId={msg.id}
+              onExecute={onExecutePlan}
+              executing={executingPlan}
+            />
+          </div>
+        );
+      } catch {
+        return (
+          <div key={msg.id} className="chat-message markdown-body">
+            <MarkdownContent content={msg.content} />
+          </div>
+        );
+      }
+    }
+
+    if (msgType === 'agent_update') {
+      try {
+        const updateData = JSON.parse(msg.content) as AgentUpdateData;
+        return (
+          <div key={msg.id}>
+            <AgentUpdateMessage data={updateData} />
+          </div>
+        );
+      } catch {
+        return (
+          <div key={msg.id} className="chat-message markdown-body">
+            <MarkdownContent content={msg.content} />
+          </div>
+        );
+      }
+    }
+
+    if (msgType === 'execution_result') {
+      return (
+        <div key={msg.id}>
+          <ExecutionResultMessage content={msg.content} />
+        </div>
+      );
+    }
+
+    return (
+      <div key={msg.id} className="chat-message markdown-body">
+        <MarkdownContent content={msg.content} />
+      </div>
+    );
+  };
 
   return (
     <>
@@ -291,7 +519,6 @@ export default function ChatPanel({
               <KebabIcon />
             </button>
 
-            {/* Kebab popover */}
             {kebabOpen && (
               <div className="popover" style={{ top: '100%', right: 0 }}>
                 <button
@@ -311,7 +538,6 @@ export default function ChatPanel({
 
         {/* Messages area */}
         <div className="chat-messages">
-          {/* Empty state — no sources and no metadata */}
           {!hasSources && !hasMetadata && !hasMessages && (
             <div className="chat-empty-state">
               <EmptyChatIcon />
@@ -323,7 +549,6 @@ export default function ChatPanel({
             </div>
           )}
 
-          {/* Metadata loading state */}
           {metadataLoading && !hasMetadata && (
             <div className="chat-empty-state">
               <div className="chat-loading-pulse" />
@@ -334,7 +559,6 @@ export default function ChatPanel({
             </div>
           )}
 
-          {/* Dynamic title section — from AI-generated metadata */}
           {hasMetadata && (
             <div className="chat-title-section">
               <span className="chat-title-section__emoji">{metadata?.emoji || '📄'}</span>
@@ -347,35 +571,20 @@ export default function ChatPanel({
             </div>
           )}
 
-          {/* Description */}
           {hasMetadata && metadata?.description && !hasMessages && (
-            <div className="chat-message">
-              <p>{metadata.description}</p>
+            <div className="chat-message markdown-body">
+              <MarkdownContent content={metadata.description} />
             </div>
           )}
 
-          {/* Chat messages */}
-          {messages.map((msg) => (
-            <div
-              key={msg.id}
-              className={msg.role === 'user' ? 'chat-user-message' : 'chat-message'}
-            >
-              {msg.role === 'assistant' ? (
-                <p>{msg.content}</p>
-              ) : (
-                msg.content
-              )}
-            </div>
-          ))}
+          {messages.map(renderMessage)}
 
-          {/* Streaming response */}
           {isStreaming && streamingText && (
-            <div className="chat-message chat-message--streaming">
-              <p>{streamingText}</p>
+            <div className="chat-message chat-message--streaming markdown-body">
+              <MarkdownContent content={streamingText} />
             </div>
           )}
 
-          {/* Streaming indicator */}
           {isStreaming && !streamingText && (
             <div className="chat-message chat-message--streaming">
               <div className="chat-typing-indicator">
@@ -386,8 +595,7 @@ export default function ChatPanel({
             </div>
           )}
 
-          {/* Action buttons on last assistant message */}
-          {hasMessages && !isStreaming && messages[messages.length - 1]?.role === 'assistant' && (
+          {hasMessages && !isStreaming && !executingPlan && messages[messages.length - 1]?.role === 'assistant' && messages[messages.length - 1]?.message_type === 'text' && (
             <div className="chat-actions">
               <button
                 className="icon-btn"
@@ -416,7 +624,6 @@ export default function ChatPanel({
             </div>
           )}
 
-          {/* Suggestion chips */}
           {suggestions.length > 0 && !hasMessages && (
             <div className="chat-suggestions">
               {suggestions.map((q, i) => (
@@ -446,7 +653,7 @@ export default function ChatPanel({
               rows={1}
               id="chat-input"
               aria-label="Message input"
-              disabled={isStreaming}
+              disabled={isStreaming || executingPlan}
             />
             <span className="chat-source-badge">
               {checkedSourceCount} sources
@@ -455,7 +662,7 @@ export default function ChatPanel({
           <button
             className="chat-send-btn"
             onClick={handleSend}
-            disabled={!inputValue.trim() || isStreaming}
+            disabled={!inputValue.trim() || isStreaming || executingPlan}
             aria-label="Send message"
             title="Send message"
           >

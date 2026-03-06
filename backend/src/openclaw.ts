@@ -419,6 +419,21 @@ class OpenClawClient {
   }
 
   /**
+   * Send a chat message and return the full response as a Promise.
+   */
+  sendChatMessageAsync(message: string, sessionKey: string): Promise<string> {
+    return new Promise((resolve, reject) => {
+      this.sendChatMessage(
+        message,
+        sessionKey,
+        () => {},
+        (fullText: string) => resolve(fullText),
+        (error: unknown) => reject(error),
+      );
+    });
+  }
+
+  /**
    * Check if the client is connected and ready.
    */
   isReady(): boolean {

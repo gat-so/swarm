@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import './SimulationPanel.css';
 import CommunityCanvas from './CommunityCanvas';
+import type { SimulationMode, SimulationEvent } from '../ChatPanel/ChatPanel';
 
 /* ---- Icons ---- */
 const PlayIcon = () => (
@@ -30,24 +31,9 @@ const SkipForwardIcon = () => (
   </svg>
 );
 
-const SimPlaceholderIcon = () => (
-  <svg
-    viewBox="0 0 24 24"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth="1.5"
-    className="simulation-player__placeholder-icon"
-  >
-    <rect x="2" y="3" width="20" height="14" rx="2" />
-    <line x1="8" y1="21" x2="16" y2="21" />
-    <line x1="12" y1="17" x2="12" y2="21" />
-  </svg>
-);
-
 /* ---- Helpers ---- */
 const SPEEDS = [1, 1.5, 2];
-const TOTAL_SECONDS = 408; // 06:48
-const SCRUB_STEP = 5; // seconds per arrow key press
+const SCRUB_STEP = 5;
 
 function formatTime(seconds: number): string {
   const m = Math.floor(seconds / 60);
@@ -55,28 +41,54 @@ function formatTime(seconds: number): string {
   return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
+/* ---- Props ---- */
+interface SimulationPanelProps {
+  mode: SimulationMode;
+  simulationEvents: SimulationEvent[];
+}
+
 /* ---- Component ---- */
-export default function SimulationPanel() {
+export default function SimulationPanel({
+  mode,
+  simulationEvents,
+}: SimulationPanelProps) {
   const [playing, setPlaying] = useState(false);
-  const [currentTime, setCurrentTime] = useState(29);
+  const [currentTime, setCurrentTime] = useState(0);
   const [speedIndex, setSpeedIndex] = useState(0);
   const scrubberRef = useRef<HTMLDivElement>(null);
 
-  // Refs for drag listeners so they can be cleaned up on unmount
   const onMoveRef = useRef<((ev: MouseEvent) => void) | null>(null);
   const onUpRef = useRef<(() => void) | null>(null);
 
-  const progress = (currentTime / TOTAL_SECONDS) * 100;
+  // Derive total duration from last event timestamp
+  const totalSeconds = (() => {
+    if (simulationEvents.length === 0) return 0;
+    const lastEvent = simulationEvents[simulationEvents.length - 1];
+    return Math.ceil(lastEvent.timestamp / 1000) + 2;
+  })();
 
-  // Playback timer — advance time when playing
+  const progress = totalSeconds > 0 ? (currentTime / totalSeconds) * 100 : 0;
+
+  // Reset playback state when mode changes
   useEffect(() => {
-    if (!playing) return;
+    if (mode === 'replay') {
+      setCurrentTime(0);
+      setPlaying(false);
+    } else if (mode === 'recording') {
+      setCurrentTime(0);
+      setPlaying(false);
+    }
+  }, [mode]);
+
+  // Playback timer in replay mode
+  useEffect(() => {
+    if (mode !== 'replay' || !playing || totalSeconds === 0) return;
 
     const intervalMs = 1000 / SPEEDS[speedIndex];
     const id = setInterval(() => {
       setCurrentTime((prev) => {
-        const next = Math.min(prev + 1, TOTAL_SECONDS);
-        if (next >= TOTAL_SECONDS) {
+        const next = Math.min(prev + 1, totalSeconds);
+        if (next >= totalSeconds) {
           setPlaying(false);
         }
         return next;
@@ -84,7 +96,7 @@ export default function SimulationPanel() {
     }, intervalMs);
 
     return () => clearInterval(id);
-  }, [playing, speedIndex]);
+  }, [mode, playing, speedIndex, totalSeconds]);
 
   // Cleanup drag listeners on unmount
   useEffect(() => {
@@ -107,16 +119,19 @@ export default function SimulationPanel() {
   };
 
   const skipForward = () => {
-    setCurrentTime((t) => Math.min(TOTAL_SECONDS, t + 10));
+    setCurrentTime((t) => Math.min(totalSeconds, t + 10));
   };
 
-  const handleScrub = useCallback((clientX: number) => {
-    const el = scrubberRef.current;
-    if (!el) return;
-    const rect = el.getBoundingClientRect();
-    const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
-    setCurrentTime(Math.round(ratio * TOTAL_SECONDS));
-  }, []);
+  const handleScrub = useCallback(
+    (clientX: number) => {
+      const el = scrubberRef.current;
+      if (!el || totalSeconds === 0) return;
+      const rect = el.getBoundingClientRect();
+      const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+      setCurrentTime(Math.round(ratio * totalSeconds));
+    },
+    [totalSeconds],
+  );
 
   const handleMouseDown = (e: React.MouseEvent) => {
     handleScrub(e.clientX);
@@ -139,104 +154,113 @@ export default function SimulationPanel() {
   const handleScrubberKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'ArrowRight' || e.key === 'ArrowUp') {
       e.preventDefault();
-      setCurrentTime((t) => Math.min(TOTAL_SECONDS, t + SCRUB_STEP));
+      setCurrentTime((t) => Math.min(totalSeconds, t + SCRUB_STEP));
     } else if (e.key === 'ArrowLeft' || e.key === 'ArrowDown') {
       e.preventDefault();
       setCurrentTime((t) => Math.max(0, t - SCRUB_STEP));
     }
   };
 
+  const isReplay = mode === 'replay';
+  const isRecording = mode === 'recording';
+
   return (
     <section className="simulation-panel" id="simulation-panel">
       {/* Header */}
       <div className="simulation-header">
         <span className="simulation-header__title">Simulation</span>
+        {isRecording && (
+          <span className="simulation-rec-badge">
+            <span className="simulation-rec-badge__dot" />
+            REC
+          </span>
+        )}
       </div>
 
       {/* Player area */}
       <div className="simulation-player">
-        <CommunityCanvas currentTime={currentTime} playing={playing} />
-        {/* Placeholder preserved for future reuse */}
-        <div className="simulation-player__placeholder simulation-player__placeholder--hidden">
-          <SimPlaceholderIcon />
-          <span className="simulation-player__placeholder-text">
-            Community mini-game simulation
-            <br />
-            will appear here
-          </span>
-        </div>
+        <CommunityCanvas
+          currentTime={currentTime}
+          playing={playing}
+          mode={mode}
+          simulationEvents={simulationEvents}
+        />
       </div>
 
-      {/* Timeline */}
-      <div className="simulation-timeline">
-        <div
-          className="simulation-scrubber"
-          ref={scrubberRef}
-          onMouseDown={handleMouseDown}
-          onKeyDown={handleScrubberKeyDown}
-          tabIndex={0}
-          role="slider"
-          aria-label="Simulation timeline"
-          aria-valuenow={currentTime}
-          aria-valuemin={0}
-          aria-valuemax={TOTAL_SECONDS}
-          aria-valuetext={formatTime(currentTime)}
-        >
-          <div className="simulation-scrubber__track">
+      {/* Timeline — only visible in replay mode */}
+      {isReplay && totalSeconds > 0 && (
+        <div className="simulation-timeline">
+          <div
+            className="simulation-scrubber"
+            ref={scrubberRef}
+            onMouseDown={handleMouseDown}
+            onKeyDown={handleScrubberKeyDown}
+            tabIndex={0}
+            role="slider"
+            aria-label="Simulation timeline"
+            aria-valuenow={currentTime}
+            aria-valuemin={0}
+            aria-valuemax={totalSeconds}
+            aria-valuetext={formatTime(currentTime)}
+          >
+            <div className="simulation-scrubber__track">
+              <div
+                className="simulation-scrubber__fill"
+                style={{ width: `${progress}%` }}
+              />
+            </div>
             <div
-              className="simulation-scrubber__fill"
-              style={{ width: `${progress}%` }}
+              className="simulation-scrubber__thumb"
+              style={{ left: `${progress}%` }}
             />
           </div>
-          <div
-            className="simulation-scrubber__thumb"
-            style={{ left: `${progress}%` }}
-          />
+          <div className="simulation-time">
+            <span>{formatTime(currentTime)}</span>
+            <span>{formatTime(totalSeconds)}</span>
+          </div>
         </div>
-        <div className="simulation-time">
-          <span>{formatTime(currentTime)}</span>
-          <span>{formatTime(TOTAL_SECONDS)}</span>
+      )}
+
+      {/* Controls — only visible in replay mode */}
+      {isReplay && totalSeconds > 0 && (
+        <div className="simulation-controls">
+          <button
+            className="sim-control-btn sim-control-btn--speed"
+            onClick={cycleSpeed}
+            aria-label={`Speed ${SPEEDS[speedIndex]}x`}
+            title={`Speed ${SPEEDS[speedIndex]}x`}
+          >
+            {SPEEDS[speedIndex]}X
+          </button>
+
+          <button
+            className="sim-control-btn"
+            onClick={skipBack}
+            aria-label="Skip back 10 seconds"
+            title="Skip back 10 seconds"
+          >
+            <SkipBackIcon />
+          </button>
+
+          <button
+            className="sim-play-btn"
+            onClick={() => setPlaying((p) => !p)}
+            aria-label={playing ? 'Pause' : 'Play'}
+            title={playing ? 'Pause' : 'Play'}
+          >
+            {playing ? <PauseIcon /> : <PlayIcon />}
+          </button>
+
+          <button
+            className="sim-control-btn"
+            onClick={skipForward}
+            aria-label="Skip forward 10 seconds"
+            title="Skip forward 10 seconds"
+          >
+            <SkipForwardIcon />
+          </button>
         </div>
-      </div>
-
-      {/* Controls */}
-      <div className="simulation-controls">
-        <button
-          className="sim-control-btn sim-control-btn--speed"
-          onClick={cycleSpeed}
-          aria-label={`Speed ${SPEEDS[speedIndex]}x`}
-          title={`Speed ${SPEEDS[speedIndex]}x`}
-        >
-          {SPEEDS[speedIndex]}X
-        </button>
-
-        <button
-          className="sim-control-btn"
-          onClick={skipBack}
-          aria-label="Skip back 10 seconds"
-          title="Skip back 10 seconds"
-        >
-          <SkipBackIcon />
-        </button>
-
-        <button
-          className="sim-play-btn"
-          onClick={() => setPlaying((p) => !p)}
-          aria-label={playing ? 'Pause' : 'Play'}
-          title={playing ? 'Pause' : 'Play'}
-        >
-          {playing ? <PauseIcon /> : <PlayIcon />}
-        </button>
-
-        <button
-          className="sim-control-btn"
-          onClick={skipForward}
-          aria-label="Skip forward 10 seconds"
-          title="Skip forward 10 seconds"
-        >
-          <SkipForwardIcon />
-        </button>
-      </div>
+      )}
     </section>
   );
 }
