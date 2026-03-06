@@ -4,6 +4,8 @@ services:
     container_name: swarm-frontend-production
     ports:
       - "3001:80"
+    environment:
+      - BACKEND_URL=http://backend-production:4001
     depends_on:
       - backend-production
     restart: unless-stopped

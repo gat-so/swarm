@@ -4,6 +4,8 @@ services:
     container_name: swarm-frontend-staging
     ports:
       - "3000:80"
+    environment:
+      - BACKEND_URL=http://backend-staging:4000
     depends_on:
       - backend-staging
     restart: unless-stopped
