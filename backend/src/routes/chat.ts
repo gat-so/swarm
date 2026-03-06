@@ -19,6 +19,7 @@ if (!fs.existsSync(DOWNLOADS_DIR)) {
 const router = Router();
 
 const AGENT_DELAY_MS = 2500;
+const MAX_AGENT_RETRIES = 2;
 
 const SKIN_COLORS = ['#f5c5a3', '#d4a574', '#c68642', '#8d5524', '#f5c5a3', '#d4a574'];
 
@@ -40,6 +41,12 @@ interface PlanData {
   expected_output: string;
 }
 
+interface MessageRow {
+  role: string;
+  content: string;
+  message_type: string;
+}
+
 function readSourceContent(sessionId: string, filename: string, originalName: string): string {
   const filePath = path.join(UPLOADS_DIR, sessionId, filename);
   if (!fs.existsSync(filePath)) return '';
@@ -55,7 +62,7 @@ function readSourceContent(sessionId: string, filename: string, originalName: st
     }
   }
 
-  return `[File: ${originalName} (${ext.slice(1).toUpperCase()} format — content not directly readable)]`;
+  return '';
 }
 
 function buildSourceContext(sessionId: string): string {
@@ -66,14 +73,76 @@ function buildSourceContext(sessionId: string): string {
   if (sources.length === 0) return '';
 
   const parts = sources.map((s, i) => {
+    const ext = path.extname(s.original_name).toLowerCase();
+
     if (s.remote_path) {
-      return `- Source ${i + 1}: ${s.original_name} (available at: ${s.remote_path})`;
+      const textExtensions = ['.txt', '.md', '.csv', '.json', '.xml', '.html', '.css', '.js', '.ts', '.py', '.yaml', '.yml', '.toml', '.ini', '.cfg', '.log', '.rtf'];
+      if (textExtensions.includes(ext)) {
+        const content = readSourceContent(sessionId, s.filename, s.original_name);
+        if (content) {
+          return `--- Source ${i + 1}: ${s.original_name} ---\nFile path: ${s.remote_path}\n\n${content}`;
+        }
+      }
+      return `Source ${i + 1}: ${s.original_name}\nFile path: ${s.remote_path}\nThis is a ${ext.slice(1).toUpperCase()} file. Use the file path above to read and analyze its contents.`;
     }
+
     const content = readSourceContent(sessionId, s.filename, s.original_name);
-    return `--- Source ${i + 1}: ${s.original_name} ---\n${content}`;
+    if (content) {
+      return `--- Source ${i + 1}: ${s.original_name} ---\n${content}`;
+    }
+    return `Source ${i + 1}: ${s.original_name} (${ext.slice(1).toUpperCase()} file — use tools to read)`;
   });
 
-  return `The user has provided the following source documents. You can read them using the file paths provided.\n\n${parts.join('\n\n')}`;
+  return `The user has provided the following source documents. For files with paths, use your file reading tools to access them.\n\n${parts.join('\n\n')}`;
+}
+
+function buildConversationHistory(sessionId: string, limit = 20): string {
+  const msgs = db.prepare(
+    `SELECT role, content, message_type FROM messages
+     WHERE session_id = ? AND message_type IN ('text', 'execution_result')
+     ORDER BY created_at DESC LIMIT ?`,
+  ).all(sessionId, limit) as MessageRow[];
+
+  if (msgs.length === 0) return '';
+
+  const reversed = msgs.reverse();
+  const lines = reversed.map((m) => {
+    const prefix = m.role === 'user' ? 'User' : 'Assistant';
+    const content = m.content.length > 2000 ? m.content.slice(0, 2000) + '...' : m.content;
+    return `${prefix}: ${content}`;
+  });
+
+  return `Previous conversation:\n${lines.join('\n\n')}\n\n---\n\n`;
+}
+
+function buildSystemPrompt(goal?: string, length?: string): string {
+  let prompt = `You are SWARM, an advanced AI assistant powered by multiple specialized agents. You can read files, analyze documents, send emails, search the web, write code, and perform any task the user requests. Be thorough, detailed, and professional. Use markdown formatting for readability.`;
+
+  if (goal === 'learning') {
+    prompt += `\n\nThe user wants to learn. Provide step-by-step explanations, define technical terms, use analogies, and structure your responses for educational clarity.`;
+  } else if (goal === 'custom') {
+    prompt += `\n\nAdapt your style and tone to what the user requests.`;
+  }
+
+  if (length === 'longer') {
+    prompt += `\n\nProvide comprehensive, detailed responses with thorough explanations and examples.`;
+  } else if (length === 'shorter') {
+    prompt += `\n\nKeep responses concise and to the point. Prioritize brevity.`;
+  }
+
+  return prompt;
+}
+
+function shouldSuggestSwarmAgents(message: string, sourceCount: number): boolean {
+  const taskVerbs = /\b(analyze all|compare all|review all|evaluate all|send.*email|compose.*email|create.*report|generate.*report|compile|assess all|process all|summarize all|rank all|score all|analyze these|review these|compare these)\b/i;
+  const multiStep = /\b(and then|after that|first.*then|step \d|for each|every one|all of them|each of them)\b/i;
+  const isQuestion = /^(what|how|why|when|where|who|is|are|can|do|does|did|will|would|should|could|tell me|explain)\b/i;
+
+  if (isQuestion.test(message.trim()) && message.length < 200) return false;
+  if (message.length < 30) return false;
+  if (sourceCount >= 3 && taskVerbs.test(message)) return true;
+  if (taskVerbs.test(message) && multiStep.test(message)) return true;
+  return false;
 }
 
 function parseJsonResponse(raw: string): unknown {
@@ -98,12 +167,7 @@ function sseWrite(res: import('express').Response, data: Record<string, unknown>
   res.write(`data: ${JSON.stringify(data)}\n\n`);
 }
 
-/**
- * Scan text for OpenClaw container file paths, download each via SFTP,
- * and replace with a local download URL in markdown link format.
- */
 async function processFileReferences(text: string): Promise<string> {
-  // Match paths like /data/.openclaw/workspace/... with common file extensions
   const filePathRegex = /(?:['"`]?)(\/?data\/\.openclaw\/workspace\/[^\s'"`,)>\]]+\.(?:pdf|docx?|xlsx?|csv|txt|md|pptx?|png|jpe?g|gif|svg|zip|tar\.gz|json|xml|html|rtf))(?:['"`]?)/gi;
 
   const matches = [...text.matchAll(filePathRegex)];
@@ -132,9 +196,21 @@ async function processFileReferences(text: string): Promise<string> {
   return result;
 }
 
-// --- POST /api/chat/send — planning-first flow ---
+function getCheckedSourceCount(sessionId: string): number {
+  const row = db.prepare(
+    'SELECT COUNT(*) as count FROM sources WHERE session_id = ? AND checked = 1',
+  ).get(sessionId) as { count: number };
+  return row.count;
+}
+
+// --- POST /api/chat/send — direct passthrough with auto-detection ---
 router.post('/send', async (req, res) => {
-  const { sessionId, message } = req.body as { sessionId?: string; message?: string };
+  const { sessionId, message, goal, length } = req.body as {
+    sessionId?: string;
+    message?: string;
+    goal?: string;
+    length?: string;
+  };
 
   if (!sessionId || !message) {
     res.status(400).json({ error: 'sessionId and message are required' });
@@ -152,33 +228,123 @@ router.post('/send', async (req, res) => {
   );
 
   const sourceContext = buildSourceContext(sessionId);
+  const conversationHistory = buildConversationHistory(sessionId);
+  const systemPrompt = buildSystemPrompt(goal, length);
+  const sourceCount = getCheckedSourceCount(sessionId);
 
-  const planningPrompt = `${sourceContext ? sourceContext + '\n\n---\n\n' : ''}User message: ${message}
+  const fullPrompt = [
+    systemPrompt,
+    sourceContext ? `\n\n${sourceContext}` : '',
+    conversationHistory ? `\n\n${conversationHistory}` : '',
+    `\nUser: ${message}`,
+  ].filter(Boolean).join('');
 
-You are SWARM, a multi-agent AI assistant. Analyze the user's message and decide whether it requires a multi-step execution plan with sub-agents, or if you can respond directly.
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
 
-If the message is a simple question, greeting, or conversational reply that does NOT require multiple agents working on sub-tasks, respond with:
-{"needs_plan": false, "direct_response": "your response here"}
+  const sessionKey = `swarm-chat-${sessionId}-${Date.now()}`;
 
-If the message requires a complex task that benefits from multiple specialized agents, create an execution plan. Respond with ONLY valid JSON:
+  try {
+    openclawClient.sendChatMessage(
+      fullPrompt,
+      sessionKey,
+      (chunkText: string) => {
+        sseWrite(res, { type: 'delta', text: chunkText });
+      },
+      async (fullText: string) => {
+        try {
+          const processed = await processFileReferences(fullText);
+
+          const assistantMsgId = crypto.randomUUID();
+          db.prepare('INSERT INTO messages (id, session_id, role, content, message_type) VALUES (?, ?, ?, ?, ?)').run(
+            assistantMsgId, sessionId, 'assistant', processed, 'text',
+          );
+
+          sseWrite(res, { type: 'done', text: processed, messageType: 'text' });
+
+          if (shouldSuggestSwarmAgents(message, sourceCount)) {
+            sseWrite(res, {
+              type: 'suggest_plan',
+              message: 'This task could benefit from coordinated Swarm agents working together for a more thorough result.',
+              originalMessage: message,
+            });
+          }
+
+          res.end();
+        } catch (err) {
+          console.error('[Chat] Post-processing error:', err);
+          sseWrite(res, { type: 'done', text: fullText, messageType: 'text' });
+          res.end();
+        }
+      },
+      (error: unknown) => {
+        console.error('[Chat] OpenClaw error:', error);
+        sseWrite(res, { type: 'error', error: String(error) });
+        res.end();
+      },
+    );
+  } catch (err) {
+    console.error('[Chat] Send error:', err);
+    sseWrite(res, { type: 'error', error: String(err) });
+    res.end();
+  }
+});
+
+// --- POST /api/chat/plan — create a multi-agent plan for a message ---
+router.post('/plan', async (req, res) => {
+  const { sessionId, message } = req.body as { sessionId?: string; message?: string };
+
+  if (!sessionId || !message) {
+    res.status(400).json({ error: 'sessionId and message are required' });
+    return;
+  }
+
+  if (!openclawClient.isReady()) {
+    res.status(503).json({ error: 'OpenClaw is not connected' });
+    return;
+  }
+
+  const sourceContext = buildSourceContext(sessionId);
+  const conversationHistory = buildConversationHistory(sessionId);
+
+  const planningPrompt = `${conversationHistory}${sourceContext ? sourceContext + '\n\n---\n\n' : ''}User request: ${message}
+
+You are SWARM, a multi-agent AI coordinator. The user wants this task handled by a team of specialized agents. Create an execution plan.
+
+Respond with ONLY valid JSON in this exact format:
 {
   "needs_plan": true,
-  "plan_summary": "A concise summary of what will be done",
+  "plan_summary": "A clear summary of the overall task and approach",
   "agents": [
-    {"id": "agent-1", "name": "Agent Name", "role": "role_type", "task": "What this agent will do", "color": "#3b82f6"},
-    {"id": "agent-2", "name": "Agent Name", "role": "role_type", "task": "What this agent will do", "color": "#22c55e"}
+    {"id": "agent-1", "name": "Descriptive Agent Name", "role": "Document Analyst", "task": "Detailed description of what this agent will do, including specific files to analyze or actions to take", "color": "#3b82f6"},
+    {"id": "agent-2", "name": "Descriptive Agent Name", "role": "Research Synthesizer", "task": "Detailed description...", "color": "#22c55e"}
   ],
   "execution_order": [["agent-1"], ["agent-2", "agent-3"], ["agent-4"]],
-  "estimated_duration": 60,
-  "expected_output": "Description of what the final output will be"
+  "estimated_duration": 120,
+  "expected_output": "What the final deliverable will look like"
 }
 
-Rules for the plan:
-- Each agent should have a unique id (agent-1, agent-2, etc.), a descriptive name, a role, a clear task description, and a distinct hex color
-- execution_order is an array of arrays — agents in the same inner array run in parallel, outer arrays run sequentially
-- Pick appropriate agent types: Document Analyst, Research Synthesizer, Data Processor, Quality Checker, Email Composer, Content Writer, Report Generator, Code Analyst, etc.
+Agent role types to choose from:
+- Document Analyst: Reads, parses, and extracts information from files (PDFs, spreadsheets, documents)
+- Research Synthesizer: Combines information from multiple sources into coherent analysis
+- Data Processor: Handles data transformation, scoring, ranking, and quantitative analysis
+- Quality Checker: Reviews and validates output from other agents for accuracy
+- Email Composer: Drafts professional emails with proper formatting and tone
+- Content Writer: Produces polished written content (reports, summaries, articles)
+- Report Generator: Creates structured, formatted reports with sections and data
+- Code Analyst: Reviews, writes, or debugs code and technical documentation
+
+Rules:
+- Each agent MUST have a unique id (agent-1, agent-2, etc.)
+- Task descriptions should be specific and actionable — reference actual source files by name when relevant
+- execution_order is an array of arrays: agents in the same inner array run in parallel, outer arrays run sequentially
 - Use colors: #3b82f6 (blue), #22c55e (green), #f97316 (orange), #a855f7 (purple), #14b8a6 (teal), #ef4444 (red), #eab308 (yellow), #ec4899 (pink)
-- Respond with ONLY the JSON object, no extra text or markdown`;
+- Keep agent count between 2-6 for efficiency
+- Respond with ONLY the JSON, no markdown fences or extra text`;
 
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
@@ -206,18 +372,7 @@ Rules for the plan:
       return;
     }
 
-    if (!planData.needs_plan) {
-      const rawDirect = planData.direct_response || rawResponse;
-      const directText = await processFileReferences(rawDirect);
-      const assistantMsgId = crypto.randomUUID();
-      db.prepare('INSERT INTO messages (id, session_id, role, content, message_type) VALUES (?, ?, ?, ?, ?)').run(
-        assistantMsgId, sessionId, 'assistant', directText, 'text',
-      );
-      sseWrite(res, { type: 'done', text: directText, messageType: 'text' });
-      res.end();
-      return;
-    }
-
+    planData.needs_plan = true;
     const planMsgId = crypto.randomUUID();
     const planContent = JSON.stringify(planData);
     db.prepare('INSERT INTO messages (id, session_id, role, content, message_type) VALUES (?, ?, ?, ?, ?)').run(
@@ -266,6 +421,11 @@ router.post('/execute', async (req, res) => {
     return;
   }
 
+  const lastUserMsg = db.prepare(
+    `SELECT content FROM messages WHERE session_id = ? AND role = 'user' AND message_type = 'text' ORDER BY created_at DESC LIMIT 1`,
+  ).get(sessionId) as { content: string } | undefined;
+  const originalUserRequest = lastUserMsg?.content || '';
+
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache',
@@ -289,41 +449,143 @@ router.post('/execute', async (req, res) => {
     { x: canvasW - 160, y: canvasH / 2 },
   ];
 
+  async function executeAgent(
+    agent: PlanAgent,
+    agentIdx: number,
+    sourceContext: string,
+    previousResults: Array<{ agentName: string; result: string }>,
+  ): Promise<{ agentId: string; agentName: string; result: string }> {
+    const coordSpawn = spawnPositions[0]!;
+    const agentPos = spawnPositions[(agentIdx + 1) % spawnPositions.length]!;
+
+    sseWrite(res, {
+      type: 'sim_event',
+      event: { type: 'say', agentId: 'coordinator', message: `${agent.name}, start your task!`, timestamp: ts() },
+    });
+
+    await sleep(1000);
+
+    sseWrite(res, {
+      type: 'sim_event',
+      event: { type: 'say', agentId: agent.id, message: 'Working on it...', timestamp: ts() },
+    });
+
+    sseWrite(res, {
+      type: 'agent_update',
+      agentId: agent.id, agentName: agent.name, agentColor: agent.color,
+      message: `Starting: ${agent.task}`,
+      timestamp: ts(),
+    });
+
+    const midX = (coordSpawn.x + agentPos.x) / 2;
+    const midY = (coordSpawn.y + agentPos.y) / 2;
+    sseWrite(res, {
+      type: 'sim_event',
+      event: { type: 'move', agentId: agent.id, x: midX, y: midY, timestamp: ts() },
+    });
+
+    await sleep(AGENT_DELAY_MS);
+
+    const prevResultsContext = previousResults.length > 0
+      ? `\n\nResults from previous agents:\n${previousResults.map((r) => `## ${r.agentName}\n${r.result}`).join('\n\n')}\n\n---\n\n`
+      : '';
+
+    const subTaskPrompt = `${sourceContext ? sourceContext + '\n\n---\n\n' : ''}${prevResultsContext}Original user request: "${originalUserRequest}"
+
+You are "${agent.name}", a specialized ${agent.role} agent working as part of a coordinated team.
+
+Your specific task: ${agent.task}
+
+Instructions:
+- Focus exclusively on your assigned task
+- Be thorough and detailed in your output
+- Reference specific data, quotes, or findings from the source documents
+- If you need to read a file, use the file path provided to access it
+- Write your findings in clear, well-structured natural language with markdown formatting
+- Do NOT return JSON`;
+
+    const subSessionKey = `swarm-exec-${sessionId}-${agent.id}-${Date.now()}`;
+
+    let lastError: unknown;
+    for (let attempt = 0; attempt <= MAX_AGENT_RETRIES; attempt++) {
+      try {
+        const rawResult = await openclawClient.sendChatMessageAsync(subTaskPrompt, subSessionKey + `-${attempt}`);
+        const result = await processFileReferences(rawResult);
+
+        const summary = result.length > 80 ? result.slice(0, 80) + '...' : result;
+        sseWrite(res, {
+          type: 'sim_event',
+          event: { type: 'say', agentId: agent.id, message: 'Done!', timestamp: ts() },
+        });
+        sseWrite(res, {
+          type: 'sim_event',
+          event: { type: 'move', agentId: agent.id, x: agentPos.x, y: agentPos.y, timestamp: ts() },
+        });
+        sseWrite(res, {
+          type: 'agent_update',
+          agentId: agent.id, agentName: agent.name, agentColor: agent.color,
+          message: `Completed: ${summary}`,
+          timestamp: ts(),
+        });
+
+        const updateMsgId = crypto.randomUUID();
+        db.prepare('INSERT INTO messages (id, session_id, role, content, message_type) VALUES (?, ?, ?, ?, ?)').run(
+          updateMsgId, sessionId, 'assistant',
+          JSON.stringify({ agentId: agent.id, agentName: agent.name, agentColor: agent.color, message: result }),
+          'agent_update',
+        );
+
+        return { agentId: agent.id, agentName: agent.name, result };
+      } catch (err) {
+        lastError = err;
+        console.error(`[Execute] Agent ${agent.id} attempt ${attempt + 1} failed:`, err);
+        if (attempt < MAX_AGENT_RETRIES) {
+          sseWrite(res, {
+            type: 'sim_event',
+            event: { type: 'say', agentId: agent.id, message: `Retrying... (${attempt + 2}/${MAX_AGENT_RETRIES + 1})`, timestamp: ts() },
+          });
+          await sleep(2000);
+        }
+      }
+    }
+
+    sseWrite(res, {
+      type: 'sim_event',
+      event: { type: 'say', agentId: agent.id, message: 'Failed after retries', timestamp: ts() },
+    });
+    sseWrite(res, {
+      type: 'agent_update',
+      agentId: agent.id, agentName: agent.name, agentColor: agent.color,
+      message: `Failed: ${String(lastError)}`,
+      timestamp: ts(),
+    });
+
+    return { agentId: agent.id, agentName: agent.name, result: `[Agent failed: ${String(lastError)}]` };
+  }
+
   try {
     const coordSpawn = spawnPositions[0]!;
 
-    // Spawn coordinator agent
     sseWrite(res, {
       type: 'sim_event',
       event: {
-        type: 'spawn',
-        agentId: 'coordinator',
-        name: 'SWARM Coordinator',
-        color: '#6366f1',
-        skinColor: '#f5c5a3',
-        x: coordSpawn.x,
-        y: coordSpawn.y,
-        timestamp: ts(),
+        type: 'spawn', agentId: 'coordinator', name: 'SWARM Coordinator',
+        color: '#6366f1', skinColor: '#f5c5a3',
+        x: coordSpawn.x, y: coordSpawn.y, timestamp: ts(),
       },
     });
 
     await sleep(800);
 
-    // Spawn all plan agents
     for (let i = 0; i < plan.agents.length; i++) {
       const agent = plan.agents[i]!;
       const pos = spawnPositions[(i + 1) % spawnPositions.length]!;
       sseWrite(res, {
         type: 'sim_event',
         event: {
-          type: 'spawn',
-          agentId: agent.id,
-          name: agent.name,
-          color: agent.color,
-          skinColor: SKIN_COLORS[i % SKIN_COLORS.length],
-          x: pos.x,
-          y: pos.y,
-          timestamp: ts(),
+          type: 'spawn', agentId: agent.id, name: agent.name,
+          color: agent.color, skinColor: SKIN_COLORS[i % SKIN_COLORS.length]!,
+          x: pos.x, y: pos.y, timestamp: ts(),
         },
       });
       await sleep(400);
@@ -331,188 +593,67 @@ router.post('/execute', async (req, res) => {
 
     await sleep(600);
 
-    // Coordinator introduces the plan
     sseWrite(res, {
       type: 'sim_event',
-      event: {
-        type: 'say',
-        agentId: 'coordinator',
-        message: `Coordinating ${plan.agents.length} agents...`,
-        timestamp: ts(),
-      },
+      event: { type: 'say', agentId: 'coordinator', message: `Coordinating ${plan.agents.length} agents...`, timestamp: ts() },
     });
-
     sseWrite(res, {
       type: 'agent_update',
-      agentId: 'coordinator',
-      agentName: 'SWARM Coordinator',
-      agentColor: '#6366f1',
-      message: plan.plan_summary,
-      timestamp: ts(),
+      agentId: 'coordinator', agentName: 'SWARM Coordinator', agentColor: '#6366f1',
+      message: plan.plan_summary, timestamp: ts(),
     });
 
     await sleep(AGENT_DELAY_MS);
 
-    // Execute each group in execution_order
     const sourceContext = buildSourceContext(sessionId);
     const allResults: Array<{ agentId: string; agentName: string; result: string }> = [];
 
     for (let groupIdx = 0; groupIdx < plan.execution_order.length; groupIdx++) {
       const group = plan.execution_order[groupIdx]!;
+      const agents = group
+        .map((agentId) => {
+          const agent = plan.agents.find((a) => a.id === agentId);
+          const idx = plan.agents.findIndex((a) => a.id === agentId);
+          return agent ? { agent, idx } : null;
+        })
+        .filter((x): x is { agent: PlanAgent; idx: number } => x !== null);
 
-      for (const agentId of group) {
-        const agent = plan.agents.find((a) => a.id === agentId);
-        if (!agent) continue;
-
-        // Coordinator directs this agent
-        sseWrite(res, {
-          type: 'sim_event',
-          event: {
-            type: 'say',
-            agentId: 'coordinator',
-            message: `${agent.name}, start your task!`,
-            timestamp: ts(),
-          },
-        });
-
-        await sleep(1000);
-
-        // Agent acknowledges
-        sseWrite(res, {
-          type: 'sim_event',
-          event: {
-            type: 'say',
-            agentId: agent.id,
-            message: `Working on it... 🔧`,
-            timestamp: ts(),
-          },
-        });
-
-        sseWrite(res, {
-          type: 'agent_update',
-          agentId: agent.id,
-          agentName: agent.name,
-          agentColor: agent.color,
-          message: `Starting: ${agent.task}`,
-          timestamp: ts(),
-        });
-
-        // Move agent toward coordinator to show interaction
-        const agentIdx = plan.agents.indexOf(agent);
-        const agentPos = spawnPositions[(agentIdx + 1) % spawnPositions.length]!;
-        const midX = (coordSpawn.x + agentPos.x) / 2;
-        const midY = (coordSpawn.y + agentPos.y) / 2;
-
-        sseWrite(res, {
-          type: 'sim_event',
-          event: {
-            type: 'move',
-            agentId: agent.id,
-            x: midX,
-            y: midY,
-            timestamp: ts(),
-          },
-        });
-
+      if (agents.length === 1) {
+        const { agent, idx } = agents[0]!;
+        const result = await executeAgent(agent, idx, sourceContext, allResults);
+        allResults.push(result);
         await sleep(AGENT_DELAY_MS);
-
-        // Send the sub-task to OpenClaw
-        const subTaskPrompt = `${sourceContext ? sourceContext + '\n\n---\n\n' : ''}You are "${agent.name}", a specialized ${agent.role} agent. Your task: ${agent.task}
-
-Complete this task thoroughly and provide your results. Be concise but comprehensive. Do NOT return JSON — write your findings/output in natural language.`;
-
-        const subSessionKey = `swarm-exec-${sessionId}-${agent.id}-${Date.now()}`;
-
-        try {
-          const rawResult = await openclawClient.sendChatMessageAsync(subTaskPrompt, subSessionKey);
-          const result = await processFileReferences(rawResult);
-
-          allResults.push({ agentId: agent.id, agentName: agent.name, result });
-
-          // Agent reports completion
-          const summary = result.length > 80 ? result.slice(0, 80) + '...' : result;
-          sseWrite(res, {
-            type: 'sim_event',
-            event: {
-              type: 'say',
-              agentId: agent.id,
-              message: `Done! ✅`,
-              timestamp: ts(),
-            },
-          });
-
-          // Move agent back to original position
-          sseWrite(res, {
-            type: 'sim_event',
-            event: {
-              type: 'move',
-              agentId: agent.id,
-              x: agentPos.x,
-              y: agentPos.y,
-              timestamp: ts(),
-            },
-          });
-
-          sseWrite(res, {
-            type: 'agent_update',
-            agentId: agent.id,
-            agentName: agent.name,
-            agentColor: agent.color,
-            message: `Completed: ${summary}`,
-            timestamp: ts(),
-          });
-
-          // Store agent update message
-          const updateMsgId = crypto.randomUUID();
-          db.prepare('INSERT INTO messages (id, session_id, role, content, message_type) VALUES (?, ?, ?, ?, ?)').run(
-            updateMsgId, sessionId, 'assistant',
-            JSON.stringify({ agentId: agent.id, agentName: agent.name, agentColor: agent.color, message: result }),
-            'agent_update',
-          );
-        } catch (err) {
-          console.error(`[Execute] Agent ${agent.id} failed:`, err);
-          sseWrite(res, {
-            type: 'sim_event',
-            event: {
-              type: 'say',
-              agentId: agent.id,
-              message: `Error! ❌`,
-              timestamp: ts(),
-            },
-          });
-          sseWrite(res, {
-            type: 'agent_update',
-            agentId: agent.id,
-            agentName: agent.name,
-            agentColor: agent.color,
-            message: `Failed: ${String(err)}`,
-            timestamp: ts(),
-          });
-        }
-
+      } else {
+        const groupResults = await Promise.all(
+          agents.map(({ agent, idx }) => executeAgent(agent, idx, sourceContext, allResults)),
+        );
+        allResults.push(...groupResults);
         await sleep(AGENT_DELAY_MS);
       }
     }
 
-    // Ask OpenClaw to synthesize final output from all agent results
-    const synthesisPrompt = `You are SWARM, a multi-agent AI coordinator. Your sub-agents have completed their tasks. Here are their results:
+    const synthesisPrompt = `Original user request: "${originalUserRequest}"
+
+Your sub-agents have completed their tasks. Here are their results:
 
 ${allResults.map((r) => `## ${r.agentName}\n${r.result}`).join('\n\n')}
 
 ---
 
-Now synthesize all agent results into a final, cohesive output that addresses the user's original request. Format it professionally. Do NOT mention agents or the process — just deliver the final work product.`;
+Synthesize all agent results into a final, cohesive output that directly addresses the user's original request: "${originalUserRequest}"
+
+Requirements:
+- Deliver the final work product — not a summary of what agents did
+- Use professional formatting with markdown (headings, lists, tables where appropriate)
+- If the task involved creating a document, email, or report, present it in its final form
+- Do NOT mention agents, the process, or how the work was divided
+- Ensure the output is complete, accurate, and ready to use`;
 
     const synthesisKey = `swarm-synth-${sessionId}-${Date.now()}`;
 
     sseWrite(res, {
       type: 'sim_event',
-      event: {
-        type: 'say',
-        agentId: 'coordinator',
-        message: 'Compiling final results... 📋',
-        timestamp: ts(),
-      },
+      event: { type: 'say', agentId: 'coordinator', message: 'Compiling final results...', timestamp: ts() },
     });
 
     await sleep(AGENT_DELAY_MS);
@@ -520,18 +661,11 @@ Now synthesize all agent results into a final, cohesive output that addresses th
     const rawFinalOutput = await openclawClient.sendChatMessageAsync(synthesisPrompt, synthesisKey);
     const finalOutput = await processFileReferences(rawFinalOutput);
 
-    // Coordinator announces completion
     sseWrite(res, {
       type: 'sim_event',
-      event: {
-        type: 'say',
-        agentId: 'coordinator',
-        message: 'All tasks complete! 🎉',
-        timestamp: ts(),
-      },
+      event: { type: 'say', agentId: 'coordinator', message: 'All tasks complete!', timestamp: ts() },
     });
 
-    // Store the final output
     const resultMsgId = crypto.randomUUID();
     db.prepare('INSERT INTO messages (id, session_id, role, content, message_type) VALUES (?, ?, ?, ?, ?)').run(
       resultMsgId, sessionId, 'assistant', finalOutput, 'execution_result',
@@ -546,14 +680,9 @@ Now synthesize all agent results into a final, cohesive output that addresses th
       timestamp: ts(),
     });
 
-    // Signal simulation recording to stop
     sseWrite(res, {
       type: 'sim_event',
-      event: {
-        type: 'done',
-        agentId: 'coordinator',
-        timestamp: ts(),
-      },
+      event: { type: 'done', agentId: 'coordinator', timestamp: ts() },
     });
 
     res.end();
@@ -564,7 +693,7 @@ Now synthesize all agent results into a final, cohesive output that addresses th
   }
 });
 
-// --- GET /api/chat/history/:sessionId — fetch chat messages ---
+// --- GET /api/chat/history/:sessionId ---
 router.get('/history/:sessionId', (req, res) => {
   const { sessionId } = req.params;
 

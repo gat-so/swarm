@@ -9,7 +9,7 @@ export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant';
   content: string;
-  message_type: 'text' | 'plan' | 'agent_update' | 'execution_result';
+  message_type: 'text' | 'plan' | 'agent_update' | 'execution_result' | 'plan_suggestion';
   created_at: string;
 }
 
@@ -56,6 +56,14 @@ export interface SimulationEvent {
   message?: string;
 }
 
+export type GoalType = 'default' | 'learning' | 'custom';
+export type LengthType = 'default' | 'longer' | 'shorter';
+
+export interface ChatConfig {
+  goal: GoalType;
+  length: LengthType;
+}
+
 interface ChatPanelProps {
   checkedSourceCount: number;
   metadata: SessionMetadata | null;
@@ -64,8 +72,13 @@ interface ChatPanelProps {
   streamingText: string;
   onSendMessage: (message: string) => void;
   onExecutePlan: (planId: string) => void;
+  onCreatePlan: (originalMessage: string) => void;
   executingPlan: boolean;
   metadataLoading: boolean;
+  config: ChatConfig;
+  onConfigChange: (config: ChatConfig) => void;
+  simulationCollapsed: boolean;
+  onToggleSimulation: () => void;
 }
 
 /* ---- Icons ---- */
@@ -80,14 +93,6 @@ const ConfigureIcon = () => (
   </svg>
 );
 
-const KebabIcon = () => (
-  <svg viewBox="0 0 24 24" fill="currentColor">
-    <circle cx="12" cy="5" r="1.5" />
-    <circle cx="12" cy="12" r="1.5" />
-    <circle cx="12" cy="19" r="1.5" />
-  </svg>
-);
-
 const CloseIcon = () => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
     <line x1="18" y1="6" x2="6" y2="18" />
@@ -98,14 +103,6 @@ const CloseIcon = () => (
 const CheckIcon = () => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
     <polyline points="20 6 9 17 4 12" />
-  </svg>
-);
-
-const SaveIcon = () => (
-  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-    <path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z" />
-    <polyline points="17 21 17 13 7 13 7 21" />
-    <polyline points="7 3 7 8 15 8" />
   </svg>
 );
 
@@ -136,41 +133,42 @@ const SendIcon = () => (
   </svg>
 );
 
-const EmptyChatIcon = () => (
-  <svg
-    viewBox="0 0 64 64"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth="1.5"
-    className="empty-state__icon"
-  >
-    <path d="M52 38a4 4 0 01-4 4H18l-8 8V14a4 4 0 014-4h34a4 4 0 014 4z" />
-    <line x1="20" y1="22" x2="44" y2="22" />
-    <line x1="20" y1="28" x2="38" y2="28" />
-    <line x1="20" y1="34" x2="32" y2="34" />
-  </svg>
-);
-
 const PlayArrowIcon = () => (
   <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18">
     <path d="M8 5v14l11-7z" />
   </svg>
 );
 
-/* ---- Types ---- */
-type GoalType = 'default' | 'learning' | 'custom';
-type LengthType = 'default' | 'longer' | 'shorter';
+const SimulationIcon = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+    <rect x="2" y="3" width="20" height="14" rx="2" />
+    <line x1="8" y1="21" x2="16" y2="21" />
+    <line x1="12" y1="17" x2="12" y2="21" />
+  </svg>
+);
 
-interface ChatConfig {
-  goal: GoalType;
-  length: LengthType;
-}
+const SwarmIcon = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+    <circle cx="12" cy="8" r="3" />
+    <circle cx="5" cy="16" r="2.5" />
+    <circle cx="19" cy="16" r="2.5" />
+    <path d="M12 11v2M8.5 14l-2 1.5M15.5 14l2 1.5" strokeDasharray="2 2" />
+  </svg>
+);
 
+/* ---- Constants ---- */
 const goalHelpers: Record<GoalType, string> = {
   default: 'Best for general purpose research and brainstorming tasks.',
   learning: 'Optimized for step-by-step explanations and educational content.',
   custom: 'Set a custom persona, tone, or focus for your conversation.',
 };
+
+const DEFAULT_SUGGESTIONS = [
+  'Analyze a document and summarize key findings',
+  'Help me draft a professional email',
+  'Compare and evaluate multiple options',
+  'Create a detailed report on a topic',
+];
 
 /* ---- Markdown renderer ---- */
 
@@ -215,8 +213,10 @@ function PlanCard({
   return (
     <div className="chat-plan-card">
       <div className="chat-plan-card__header">
-        <span className="chat-plan-card__icon">📋</span>
-        <span className="chat-plan-card__title">Execution Plan</span>
+        <span className="chat-plan-card__icon">
+          <SwarmIcon />
+        </span>
+        <span className="chat-plan-card__title">Agent Execution Plan</span>
       </div>
       <p className="chat-plan-card__summary">{plan.plan_summary}</p>
 
@@ -228,7 +228,10 @@ function PlanCard({
               style={{ background: agent.color }}
             />
             <div className="chat-plan-agent__info">
-              <span className="chat-plan-agent__name">{agent.name}</span>
+              <div className="chat-plan-agent__header">
+                <span className="chat-plan-agent__name">{agent.name}</span>
+                <span className="chat-plan-agent__role">{agent.role}</span>
+              </div>
               <span className="chat-plan-agent__task">{agent.task}</span>
             </div>
           </div>
@@ -237,6 +240,7 @@ function PlanCard({
 
       <div className="chat-plan-card__meta">
         <span>{plan.agents.length} agents</span>
+        <span>{plan.execution_order.length} steps</span>
         <span>~{Math.ceil(plan.estimated_duration / 60)} min</span>
       </div>
 
@@ -261,6 +265,37 @@ function PlanCard({
   );
 }
 
+function PlanSuggestionCard({
+  message,
+  originalMessage,
+  onCreatePlan,
+  disabled,
+}: {
+  message: string;
+  originalMessage: string;
+  onCreatePlan: (msg: string) => void;
+  disabled: boolean;
+}) {
+  return (
+    <div className="chat-plan-suggestion">
+      <div className="chat-plan-suggestion__icon">
+        <SwarmIcon />
+      </div>
+      <div className="chat-plan-suggestion__content">
+        <p className="chat-plan-suggestion__text">{message}</p>
+        <button
+          className="chat-plan-suggestion__btn"
+          onClick={() => onCreatePlan(originalMessage)}
+          disabled={disabled}
+        >
+          <SwarmIcon />
+          Create Agent Plan
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function AgentUpdateMessage({ data }: { data: AgentUpdateData }) {
   return (
     <div className="chat-agent-update">
@@ -280,7 +315,7 @@ function ExecutionResultMessage({ content }: { content: string }) {
   return (
     <div className="chat-execution-result">
       <div className="chat-execution-result__header">
-        <span>✅</span>
+        <span className="chat-execution-result__check">&#10003;</span>
         <span>Task Complete</span>
       </div>
       <div className="chat-execution-result__body markdown-body">
@@ -299,25 +334,25 @@ export default function ChatPanel({
   streamingText,
   onSendMessage,
   onExecutePlan,
+  onCreatePlan,
   executingPlan,
   metadataLoading,
+  config,
+  onConfigChange,
+  simulationCollapsed,
+  onToggleSimulation,
 }: ChatPanelProps) {
   const [inputValue, setInputValue] = useState('');
   const [configOpen, setConfigOpen] = useState(false);
-  const [kebabOpen, setKebabOpen] = useState(false);
-  const [config, setConfig] = useState<ChatConfig>({
-    goal: 'default',
-    length: 'default',
-  });
   const [pendingConfig, setPendingConfig] = useState<ChatConfig>(config);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [feedbackId, setFeedbackId] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const kebabRef = useRef<HTMLDivElement>(null);
   const configTriggerRef = useRef<HTMLButtonElement>(null);
   const configDialogRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const hasMetadata = metadata?.emoji || metadata?.title || metadata?.description;
-  const hasSources = checkedSourceCount > 0;
   const hasMessages = messages.length > 0;
 
   useEffect(() => {
@@ -331,17 +366,6 @@ export default function ChatPanel({
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, streamingText]);
-
-  useEffect(() => {
-    if (!kebabOpen) return;
-    const handler = (e: MouseEvent) => {
-      if (kebabRef.current && !kebabRef.current.contains(e.target as Node)) {
-        setKebabOpen(false);
-      }
-    };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, [kebabOpen]);
 
   useEffect(() => {
     if (!configOpen) return;
@@ -373,12 +397,12 @@ export default function ChatPanel({
         if (e.shiftKey) {
           if (document.activeElement === first) {
             e.preventDefault();
-            last.focus();
+            last?.focus();
           }
         } else {
           if (document.activeElement === last) {
             e.preventDefault();
-            first.focus();
+            first?.focus();
           }
         }
       }
@@ -397,7 +421,7 @@ export default function ChatPanel({
   }, [config]);
 
   const saveConfig = () => {
-    setConfig(pendingConfig);
+    onConfigChange(pendingConfig);
     setConfigOpen(false);
   };
 
@@ -419,15 +443,29 @@ export default function ChatPanel({
     onSendMessage(suggestion);
   };
 
+  const handleCopy = useCallback((msgId: string, content: string) => {
+    navigator.clipboard.writeText(content).then(() => {
+      setCopiedId(msgId);
+      setTimeout(() => setCopiedId(null), 2000);
+    }).catch(console.error);
+  }, []);
+
+  const handleFeedback = useCallback((msgId: string, type: 'up' | 'down') => {
+    setFeedbackId(`${msgId}-${type}`);
+  }, []);
+
   const suggestions: string[] = (() => {
-    if (!metadata?.suggestions) return [];
-    if (Array.isArray(metadata.suggestions)) return metadata.suggestions;
-    try {
-      const parsed: unknown = JSON.parse(metadata.suggestions as unknown as string);
-      if (Array.isArray(parsed)) return parsed as string[];
-    } catch { /* ignore */ }
+    if (metadata?.suggestions) {
+      if (Array.isArray(metadata.suggestions)) return metadata.suggestions;
+      try {
+        const parsed: unknown = JSON.parse(metadata.suggestions as unknown as string);
+        if (Array.isArray(parsed)) return parsed as string[];
+      } catch { /* ignore */ }
+    }
     return [];
   })();
+
+  const showDefaultSuggestions = !hasMessages && !hasMetadata && !metadataLoading;
 
   const renderMessage = (msg: ChatMessage) => {
     if (msg.role === 'user') {
@@ -462,6 +500,24 @@ export default function ChatPanel({
       }
     }
 
+    if (msgType === 'plan_suggestion') {
+      try {
+        const data = JSON.parse(msg.content) as { message: string; originalMessage: string };
+        return (
+          <div key={msg.id}>
+            <PlanSuggestionCard
+              message={data.message}
+              originalMessage={data.originalMessage}
+              onCreatePlan={onCreatePlan}
+              disabled={isStreaming || executingPlan}
+            />
+          </div>
+        );
+      } catch {
+        return null;
+      }
+    }
+
     if (msgType === 'agent_update') {
       try {
         const updateData = JSON.parse(msg.content) as AgentUpdateData;
@@ -488,8 +544,36 @@ export default function ChatPanel({
     }
 
     return (
-      <div key={msg.id} className="chat-message markdown-body">
-        <MarkdownContent content={msg.content} />
+      <div key={msg.id} className="chat-message-wrapper">
+        <div className="chat-message markdown-body">
+          <MarkdownContent content={msg.content} />
+        </div>
+        <div className="chat-message-actions">
+          <button
+            className={`icon-btn icon-btn--sm${copiedId === msg.id ? ' icon-btn--active' : ''}`}
+            onClick={() => handleCopy(msg.id, msg.content)}
+            aria-label="Copy"
+            title={copiedId === msg.id ? 'Copied!' : 'Copy'}
+          >
+            {copiedId === msg.id ? <CheckIcon /> : <CopyIcon />}
+          </button>
+          <button
+            className={`icon-btn icon-btn--sm${feedbackId === `${msg.id}-up` ? ' icon-btn--active' : ''}`}
+            onClick={() => handleFeedback(msg.id, 'up')}
+            aria-label="Good response"
+            title="Good response"
+          >
+            <ThumbsUpIcon />
+          </button>
+          <button
+            className={`icon-btn icon-btn--sm${feedbackId === `${msg.id}-down` ? ' icon-btn--active' : ''}`}
+            onClick={() => handleFeedback(msg.id, 'down')}
+            aria-label="Bad response"
+            title="Bad response"
+          >
+            <ThumbsDownIcon />
+          </button>
+        </div>
       </div>
     );
   };
@@ -500,7 +584,7 @@ export default function ChatPanel({
         {/* Header */}
         <div className="chat-header">
           <span className="chat-header__title">Chat</span>
-          <div className="chat-header__actions" ref={kebabRef}>
+          <div className="chat-header__actions">
             <button
               ref={configTriggerRef}
               className="icon-btn"
@@ -511,48 +595,34 @@ export default function ChatPanel({
               <ConfigureIcon />
             </button>
             <button
-              className="icon-btn"
-              onClick={() => setKebabOpen((o) => !o)}
-              aria-label="More options"
-              title="More options"
+              className={`icon-btn${!simulationCollapsed ? ' icon-btn--active' : ''}`}
+              onClick={onToggleSimulation}
+              aria-label="Toggle simulation panel"
+              title="Toggle simulation panel"
             >
-              <KebabIcon />
+              <SimulationIcon />
             </button>
-
-            {kebabOpen && (
-              <div className="popover" style={{ top: '100%', right: 0 }}>
-                <button
-                  type="button"
-                  className="popover-item"
-                  onClick={() => setKebabOpen(false)}
-                >
-                  Delete chat history
-                </button>
-                <div className="popover-note">
-                  Chat history is private to you.
-                </div>
-              </div>
-            )}
           </div>
         </div>
 
         {/* Messages area */}
         <div className="chat-messages">
-          {!hasSources && !hasMetadata && !hasMessages && (
-            <div className="chat-empty-state">
-              <EmptyChatIcon />
-              <span className="chat-empty-state__title">Start a conversation</span>
-              <span className="chat-empty-state__text">
-                Add sources to your session, then ask questions about them.
-                The AI will use your sources as knowledge.
-              </span>
+          {!hasMetadata && !hasMessages && !metadataLoading && (
+            <div className="chat-welcome">
+              <div className="chat-welcome__logo">
+                <SwarmIcon />
+              </div>
+              <h1 className="chat-welcome__title">SWARM</h1>
+              <p className="chat-welcome__subtitle">
+                Multi-agent AI assistant. Ask anything, upload documents, or give me a complex task.
+              </p>
             </div>
           )}
 
           {metadataLoading && !hasMetadata && (
             <div className="chat-empty-state">
               <div className="chat-loading-pulse" />
-              <span className="chat-empty-state__title">Analyzing sources…</span>
+              <span className="chat-empty-state__title">Analyzing sources...</span>
               <span className="chat-empty-state__text">
                 Generating a summary and suggested questions from your sources.
               </span>
@@ -561,7 +631,7 @@ export default function ChatPanel({
 
           {hasMetadata && (
             <div className="chat-title-section">
-              <span className="chat-title-section__emoji">{metadata?.emoji || '📄'}</span>
+              <span className="chat-title-section__emoji">{metadata?.emoji || ''}</span>
               <h1 className="chat-title-section__heading">
                 {metadata?.title || 'Untitled Session'}
               </h1>
@@ -595,38 +665,23 @@ export default function ChatPanel({
             </div>
           )}
 
-          {hasMessages && !isStreaming && !executingPlan && messages[messages.length - 1]?.role === 'assistant' && messages[messages.length - 1]?.message_type === 'text' && (
-            <div className="chat-actions">
-              <button
-                className="icon-btn"
-                aria-label="Save to note"
-                title="Save to note"
-              >
-                <SaveIcon />
-              </button>
-              <button className="icon-btn" aria-label="Copy" title="Copy">
-                <CopyIcon />
-              </button>
-              <button
-                className="icon-btn"
-                aria-label="Thumbs up"
-                title="Thumbs up"
-              >
-                <ThumbsUpIcon />
-              </button>
-              <button
-                className="icon-btn"
-                aria-label="Thumbs down"
-                title="Thumbs down"
-              >
-                <ThumbsDownIcon />
-              </button>
-            </div>
-          )}
-
           {suggestions.length > 0 && !hasMessages && (
             <div className="chat-suggestions">
               {suggestions.map((q, i) => (
+                <button
+                  key={i}
+                  className="chat-suggestion-chip"
+                  onClick={() => handleSuggestionClick(q)}
+                >
+                  {q}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {showDefaultSuggestions && (
+            <div className="chat-suggestions">
+              {DEFAULT_SUGGESTIONS.map((q, i) => (
                 <button
                   key={i}
                   className="chat-suggestion-chip"
@@ -649,15 +704,17 @@ export default function ChatPanel({
               value={inputValue}
               onChange={(e) => setInputValue(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder={hasSources ? 'Ask about your sources...' : 'Add sources to start chatting...'}
+              placeholder="Ask anything..."
               rows={1}
               id="chat-input"
               aria-label="Message input"
               disabled={isStreaming || executingPlan}
             />
-            <span className="chat-source-badge">
-              {checkedSourceCount} sources
-            </span>
+            {checkedSourceCount > 0 && (
+              <span className="chat-source-badge">
+                {checkedSourceCount} sources
+              </span>
+            )}
           </div>
           <button
             className="chat-send-btn"
@@ -697,13 +754,12 @@ export default function ChatPanel({
             </div>
 
             <p className="configure-chat__desc">
-              Notebooks can be customized to help you achieve different goals:
-              do research, help learn, show various perspectives, or converse in
-              a particular style and tone.
+              Customize how SWARM responds to your messages. These settings
+              affect the style, depth, and focus of responses.
             </p>
 
             <p className="configure-chat__section-title">
-              Define your conversational goal, style, or role
+              Conversational goal
             </p>
             <div className="pill-group">
               {(
@@ -728,7 +784,7 @@ export default function ChatPanel({
             </p>
 
             <p className="configure-chat__section-title">
-              Choose your response length
+              Response length
             </p>
             <div className="pill-group">
               {(

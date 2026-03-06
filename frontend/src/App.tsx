@@ -13,6 +13,7 @@ import type {
   SimulationEvent,
   PlanData,
   AgentUpdateData,
+  ChatConfig,
 } from './components/ChatPanel/ChatPanel';
 
 interface SessionRow {
@@ -30,19 +31,18 @@ function App() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
 
-  // Chat state
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [sessionMetadata, setSessionMetadata] = useState<SessionMetadata | null>(null);
   const [isStreaming, setIsStreaming] = useState(false);
   const [streamingText, setStreamingText] = useState('');
   const [metadataLoading, setMetadataLoading] = useState(false);
+  const [chatConfig, setChatConfig] = useState<ChatConfig>({ goal: 'default', length: 'default' });
 
-  // Simulation state
   const [simulationMode, setSimulationMode] = useState<SimulationMode>('idle');
   const [simulationEvents, setSimulationEvents] = useState<SimulationEvent[]>([]);
   const [executingPlan, setExecutingPlan] = useState(false);
+  const [simulationCollapsed, setSimulationCollapsed] = useState(true);
 
-  // Polling ref for metadata
   const metadataPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const checkedCount = sources.filter((s) => s.checked).length;
@@ -63,7 +63,6 @@ function App() {
     };
   }, []);
 
-  // Fetch sessions on mount
   useEffect(() => {
     fetch('/api/sessions')
       .then((res) => res.json())
@@ -77,7 +76,6 @@ function App() {
       .catch(console.error);
   }, [parseSessionMetadata]);
 
-  // Fetch sources when session changes
   useEffect(() => {
     if (!currentSessionId) return;
     fetch(`/api/sources?sessionId=${currentSessionId}`)
@@ -104,7 +102,6 @@ function App() {
       .catch(console.error);
   }, [currentSessionId]);
 
-  // Fetch chat history when session changes
   useEffect(() => {
     if (!currentSessionId) return;
     fetch(`/api/chat/history/${currentSessionId}`)
@@ -115,7 +112,6 @@ function App() {
       .catch(console.error);
   }, [currentSessionId]);
 
-  // Fetch session metadata when session changes
   useEffect(() => {
     if (!currentSessionId) return;
     fetch(`/api/sessions`)
@@ -134,7 +130,6 @@ function App() {
       .catch(console.error);
   }, [currentSessionId, parseSessionMetadata]);
 
-  // Clean up polling on unmount
   useEffect(() => {
     return () => {
       if (metadataPollRef.current) {
@@ -285,13 +280,14 @@ function App() {
     }, 2000);
   }, [currentSessionId, parseSessionMetadata]);
 
-  // SSE stream reader helper
   const readSSEStream = useCallback(
     (
       response: Response,
       handlers: {
+        onDelta?: (text: string) => void;
         onPlan?: (planId: string, plan: PlanData) => void;
         onDone?: (text: string, messageType: string) => void;
+        onSuggestPlan?: (message: string, originalMessage: string) => void;
         onSimEvent?: (event: SimulationEvent) => void;
         onAgentUpdate?: (data: AgentUpdateData & { timestamp: number }) => void;
         onExecutionComplete?: (text: string) => void;
@@ -319,7 +315,9 @@ function App() {
             try {
               const data = JSON.parse(line.slice(6)) as Record<string, unknown>;
 
-              if (data.type === 'plan') {
+              if (data.type === 'delta') {
+                handlers.onDelta?.(data.text as string);
+              } else if (data.type === 'plan') {
                 handlers.onPlan?.(
                   data.planId as string,
                   data.plan as PlanData,
@@ -328,6 +326,11 @@ function App() {
                 handlers.onDone?.(
                   data.text as string,
                   (data.messageType as string) || 'text',
+                );
+              } else if (data.type === 'suggest_plan') {
+                handlers.onSuggestPlan?.(
+                  data.message as string,
+                  data.originalMessage as string,
                 );
               } else if (data.type === 'sim_event') {
                 handlers.onSimEvent?.(data.event as SimulationEvent);
@@ -339,7 +342,7 @@ function App() {
                 handlers.onError?.(data.error as string);
               }
             } catch {
-              // partial line, ignore
+              // partial line
             }
           }
 
@@ -352,7 +355,6 @@ function App() {
     [],
   );
 
-  // Send a chat message (goes through planning-first flow)
   const handleSendMessage = useCallback(
     (message: string) => {
       if (!currentSessionId || isStreaming || executingPlan) return;
@@ -371,7 +373,79 @@ function App() {
       fetch('/api/chat/send', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sessionId: currentSessionId, message }),
+        body: JSON.stringify({
+          sessionId: currentSessionId,
+          message,
+          goal: chatConfig.goal,
+          length: chatConfig.length,
+        }),
+      })
+        .then((res) => {
+          return readSSEStream(res, {
+            onDelta: (text) => {
+              setStreamingText(text);
+            },
+            onPlan: (planId, plan) => {
+              const planMsg: ChatMessage = {
+                id: planId,
+                role: 'assistant',
+                content: JSON.stringify(plan),
+                message_type: 'plan',
+                created_at: new Date().toISOString(),
+              };
+              setMessages((prev) => [...prev, planMsg]);
+              setIsStreaming(false);
+              setStreamingText('');
+            },
+            onDone: (text) => {
+              const assistantMsg: ChatMessage = {
+                id: crypto.randomUUID(),
+                role: 'assistant',
+                content: text,
+                message_type: 'text',
+                created_at: new Date().toISOString(),
+              };
+              setMessages((prev) => [...prev, assistantMsg]);
+              setIsStreaming(false);
+              setStreamingText('');
+            },
+            onSuggestPlan: (suggestionMsg, originalMessage) => {
+              const suggestion: ChatMessage = {
+                id: crypto.randomUUID(),
+                role: 'assistant',
+                content: JSON.stringify({ message: suggestionMsg, originalMessage }),
+                message_type: 'plan_suggestion',
+                created_at: new Date().toISOString(),
+              };
+              setMessages((prev) => [...prev, suggestion]);
+            },
+            onError: (error) => {
+              console.error('Chat error:', error);
+              setIsStreaming(false);
+              setStreamingText('');
+            },
+          });
+        })
+        .catch((err) => {
+          console.error('Chat send error:', err);
+          setIsStreaming(false);
+          setStreamingText('');
+        });
+    },
+    [currentSessionId, isStreaming, executingPlan, readSSEStream, chatConfig],
+  );
+
+  const handleCreatePlan = useCallback(
+    (originalMessage: string) => {
+      if (!currentSessionId || isStreaming || executingPlan) return;
+
+      setIsStreaming(true);
+      setStreamingText('');
+
+      fetch('/api/chat/plan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId: currentSessionId, message: originalMessage }),
       })
         .then((res) => {
           return readSSEStream(res, {
@@ -400,14 +474,14 @@ function App() {
               setStreamingText('');
             },
             onError: (error) => {
-              console.error('Chat error:', error);
+              console.error('Plan error:', error);
               setIsStreaming(false);
               setStreamingText('');
             },
           });
         })
         .catch((err) => {
-          console.error('Chat send error:', err);
+          console.error('Plan create error:', err);
           setIsStreaming(false);
           setStreamingText('');
         });
@@ -415,7 +489,6 @@ function App() {
     [currentSessionId, isStreaming, executingPlan, readSSEStream],
   );
 
-  // Execute a plan
   const handleExecutePlan = useCallback(
     (planId: string) => {
       if (!currentSessionId || executingPlan) return;
@@ -423,6 +496,7 @@ function App() {
       setExecutingPlan(true);
       setSimulationMode('recording');
       setSimulationEvents([]);
+      setSimulationCollapsed(false);
 
       fetch('/api/chat/execute', {
         method: 'POST',
@@ -477,7 +551,6 @@ function App() {
     [currentSessionId, executingPlan, readSSEStream],
   );
 
-  // Create new session
   const handleNewSession = useCallback(() => {
     fetch('/api/sessions', {
       method: 'POST',
@@ -493,11 +566,11 @@ function App() {
         setSimulationMode('idle');
         setSimulationEvents([]);
         setExecutingPlan(false);
+        setSimulationCollapsed(true);
       })
       .catch(console.error);
   }, []);
 
-  // Select existing session
   const handleSelectSession = useCallback((sessionId: string) => {
     setCurrentSessionId(sessionId);
     setMessages([]);
@@ -507,6 +580,7 @@ function App() {
     setSimulationMode('idle');
     setSimulationEvents([]);
     setExecutingPlan(false);
+    setSimulationCollapsed(true);
   }, []);
 
   const handleDeleteSource = useCallback((id: string) => {
@@ -540,6 +614,10 @@ function App() {
     [currentSessionId],
   );
 
+  const handleToggleSimulation = useCallback(() => {
+    setSimulationCollapsed((prev) => !prev);
+  }, []);
+
   return (
     <div
       style={{
@@ -568,13 +646,20 @@ function App() {
         streamingText={streamingText}
         onSendMessage={handleSendMessage}
         onExecutePlan={handleExecutePlan}
+        onCreatePlan={handleCreatePlan}
         executingPlan={executingPlan}
         metadataLoading={metadataLoading}
+        config={chatConfig}
+        onConfigChange={setChatConfig}
+        simulationCollapsed={simulationCollapsed}
+        onToggleSimulation={handleToggleSimulation}
       />
-      <SimulationPanel
-        mode={simulationMode}
-        simulationEvents={simulationEvents}
-      />
+      {!simulationCollapsed && (
+        <SimulationPanel
+          mode={simulationMode}
+          simulationEvents={simulationEvents}
+        />
+      )}
     </div>
   );
 }
